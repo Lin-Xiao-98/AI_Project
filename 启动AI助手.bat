@@ -9,9 +9,12 @@ if not exist "%~dp0venv\Scripts\python.exe" (
 )
 
 "%~dp0venv\Scripts\python.exe" "%~dp0main.py"
+set "EXIT_CODE=%ERRORLEVEL%"
 
-if errorlevel 1 (
+if not "%EXIT_CODE%"=="0" (
     echo.
     echo 程序异常退出，请把上面的错误信息发给 Codex。
-    pause
 )
+echo.
+pause
+exit /b %EXIT_CODE%

@@ -915,3 +915,5 @@ if __name__ == "__main__":
         print("\n宝宝先休息啦～")
     except RuntimeError as error:
         print(f"启动失败：{error}")
+    except Exception as error:
+        print(f"程序异常退出：{type(error).__name__}: {error}")
