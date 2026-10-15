@@ -64,7 +64,8 @@ def save_account(account: WeixinAccount, path: Path = STATE_FILE) -> None:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             data = asdict(account)
             if path.resolve() == STATE_FILE.resolve():
-                set_secret("weixin_bot_token", account.token)
+                if get_secret("weixin_bot_token") != account.token:
+                    set_secret("weixin_bot_token", account.token)
                 data.pop("token", None)
             json.dump(data, stream, ensure_ascii=False, separators=(",", ":"))
             stream.flush()
