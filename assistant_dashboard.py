@@ -5,13 +5,14 @@ from __future__ import annotations
 import os
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 
 from backup_manager import BACKUP_DIR, create_backup_with_retention, restore_backup
 from conversation_manager import PROJECT_DIR
 from diagnostics_manager import create_diagnostic_report
 from export_manager import export_personal_data
 from guardian_control import read_status, start_guardian, stop_guardian
+from secret_store import set_secret
 from usage_manager import USAGE_MANAGER
 
 DATA_DIR = PROJECT_DIR / "data"
@@ -21,11 +22,12 @@ class Dashboard(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("小林 AI 助手控制台")
-        self.geometry("560x505")
+        self.geometry("560x575")
         self.resizable(False, False)
         self.configure(bg="#f5f6fa")
         self.status_text = tk.StringVar()
         self.usage_text = tk.StringVar()
+        self._refresh_job = None
         self._build()
         self.refresh()
 
@@ -60,6 +62,8 @@ class Dashboard(tk.Tk):
         self._button(buttons, "刷新状态", self.refresh, 2, 1)
         self._button(buttons, "导出个人数据", self.export_data, 3, 0)
         self._button(buttons, "生成诊断报告", self.diagnostics, 3, 1)
+        self._button(buttons, "安全更新 API 密钥", self.update_api_key, 4, 0)
+        self._button(buttons, "打开使用说明", self.open_readme, 4, 1)
 
         tk.Label(
             self,
@@ -91,6 +95,11 @@ class Dashboard(tk.Tk):
         ).grid(row=row, column=column, padx=8, pady=7)
 
     def refresh(self):
+        if self._refresh_job is not None:
+            try:
+                self.after_cancel(self._refresh_job)
+            except tk.TclError:
+                pass
         status = read_status()
         labels = {
             "running": "● 正在运行",
@@ -108,7 +117,7 @@ class Dashboard(tk.Tk):
             f"本月：{usage['month_requests']}/{usage['monthly_requests']} 次，"
             f"{usage['month_tokens']}/{usage['monthly_tokens']} tokens"
         )
-        self.after(5000, self.refresh)
+        self._refresh_job = self.after(5000, self.refresh)
 
     def start(self):
         try:
@@ -178,6 +187,31 @@ class Dashboard(tk.Tk):
             )
         except Exception as error:
             messagebox.showerror("诊断失败", str(error))
+
+    def update_api_key(self):
+        value = simpledialog.askstring(
+            "安全更新 API 密钥",
+            "请输入 OpenAI API Key。内容会用 Windows 加密保存，不写入 .env：",
+            show="*",
+            parent=self,
+        )
+        if value is None:
+            return
+        value = value.strip()
+        if len(value) < 20:
+            messagebox.showerror("没有保存", "API Key 长度不正确，请重新输入。")
+            return
+        try:
+            set_secret("openai_api_key", value)
+            messagebox.showinfo("保存成功", "API Key 已加密保存；下次后台重启后生效。")
+        except Exception as error:
+            messagebox.showerror("保存失败", str(error))
+
+    def open_readme(self):
+        try:
+            os.startfile(PROJECT_DIR / "README.md")
+        except OSError as error:
+            messagebox.showerror("打开失败", str(error))
 
 
 if __name__ == "__main__":

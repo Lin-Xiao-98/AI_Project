@@ -230,6 +230,23 @@ class ConversationManager:
                 (str(channel), str(message_id)),
             )
 
+    def prune_channel_messages(self, max_age_days=30):
+        """清理已完成的旧消息排重标记；不删除聊天正文。"""
+        if not isinstance(max_age_days, int) or max_age_days < 1:
+            raise ValueError("保留天数必须是正整数")
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        ).isoformat(timespec="seconds")
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM channel_messages
+                WHERE status = 'completed' AND completed_at < ?
+                """,
+                (cutoff,),
+            )
+            return cursor.rowcount
+
     def add_message(self, session_id, role, content):
         if role not in VALID_ROLES:
             raise ValueError(f"不支持的消息角色：{role}")

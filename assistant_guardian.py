@@ -12,7 +12,7 @@ import time
 from logging.handlers import RotatingFileHandler
 
 from backup_manager import BACKUP_DIR, create_backup_with_retention
-from conversation_manager import PROJECT_DIR
+from conversation_manager import PROJECT_DIR, ConversationManager
 from single_instance import SingleInstance
 
 DATA_DIR = PROJECT_DIR / "data"
@@ -21,6 +21,7 @@ STATUS_FILE = DATA_DIR / "guardian_status.json"
 PID_FILE = DATA_DIR / "guardian.pid"
 INBOX_DIR = DATA_DIR / "inbox"
 BACKUP_INTERVAL = 24 * 60 * 60
+MAINTENANCE_INTERVAL = 24 * 60 * 60
 
 
 def _logger():
@@ -73,6 +74,17 @@ def _prune_inbox(max_age_days: int = 30) -> int:
     return removed
 
 
+def _run_maintenance(logger) -> None:
+    removed_files = _prune_inbox()
+    removed_markers = ConversationManager().prune_channel_messages()
+    if removed_files or removed_markers:
+        logger.info(
+            "定期清理完成：微信附件 %s 个，旧排重标记 %s 个",
+            removed_files,
+            removed_markers,
+        )
+
+
 def run():
     logger = _logger()
     stopping = False
@@ -89,9 +101,8 @@ def run():
     with SingleInstance("assistant_guardian"):
         PID_FILE.write_text(str(os.getpid()), encoding="ascii")
         logger.info("后台守护程序启动")
-        removed = _prune_inbox()
-        if removed:
-            logger.info("已清理 %s 个超过 30 天的微信附件", removed)
+        _run_maintenance(logger)
+        last_maintenance = time.monotonic()
         failures = 0
         try:
             while not stopping:
@@ -124,6 +135,12 @@ def run():
                                 logger.info("自动备份完成：%s", backup.name)
                             except Exception:
                                 logger.exception("自动备份失败")
+                        if time.monotonic() - last_maintenance >= MAINTENANCE_INTERVAL:
+                            try:
+                                _run_maintenance(logger)
+                            except Exception:
+                                logger.exception("定期清理失败")
+                            last_maintenance = time.monotonic()
                         time.sleep(5)
                     if stopping:
                         break

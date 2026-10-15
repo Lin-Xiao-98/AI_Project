@@ -94,6 +94,19 @@ class ConversationManagerTests(unittest.TestCase):
             )
         self.assertTrue(self.manager.claim_channel_message("wecom", "stale"))
 
+    def test_old_completed_channel_markers_can_be_pruned(self):
+        self.assertTrue(self.manager.claim_channel_message("weixin", "old"))
+        self.manager.complete_channel_message("weixin", "old")
+        with self.manager._connect() as connection:
+            connection.execute(
+                """
+                UPDATE channel_messages SET completed_at = '2000-01-01T00:00:00+00:00'
+                WHERE channel = 'weixin' AND message_id = 'old'
+                """
+            )
+        self.assertEqual(self.manager.prune_channel_messages(), 1)
+        self.assertTrue(self.manager.claim_channel_message("weixin", "old"))
+
 
 if __name__ == "__main__":
     unittest.main()

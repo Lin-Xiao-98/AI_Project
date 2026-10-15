@@ -136,6 +136,8 @@ def create_diagnostic_report(
         "dependencies": _dependency_versions(),
         "git": _git_status(project_dir),
     }
-    path = output_directory / datetime.now().strftime("diagnostic_%Y%m%d_%H%M%S.json")
+    path = output_directory / datetime.now().strftime(
+        "diagnostic_%Y%m%d_%H%M%S_%f.json"
+    )
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return path

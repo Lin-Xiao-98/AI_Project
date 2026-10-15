@@ -56,7 +56,7 @@ def export_personal_data(
     database = Path(database)
     memory_file = Path(memory_file)
     output_directory.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     target = output_directory / f"assistant_export_{stamp}.zip"
     payload = {
         "format_version": 1,
