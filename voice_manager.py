@@ -8,10 +8,17 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+from usage_manager import USAGE_MANAGER
+
 PROJECT_DIR = Path(__file__).resolve().parent
 AUDIO_DIR = PROJECT_DIR / "data" / "audio"
 ALLOWED_AUDIO_SUFFIXES = {".flac", ".m4a", ".mp3", ".mp4", ".mpeg", ".mpga", ".ogg", ".wav", ".webm"}
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
+
+
+def _is_openai_client(client) -> bool:
+    """仅给真正的 OpenAI SDK 客户端记账，排除本地测试替身。"""
+    return client.__class__.__module__.split(".", 1)[0] == "openai"
 
 
 def _timestamped_path(prefix: str, suffix: str) -> Path:
@@ -71,11 +78,16 @@ def validate_audio_file(path: str | Path) -> Path:
 def transcribe_audio(client, path: str | Path, model: str = "gpt-4o-mini-transcribe") -> str:
     """把本地音频显式上传至 OpenAI API 并返回文本。"""
     audio_path = validate_audio_file(path)
+    track_usage = _is_openai_client(client)
+    if track_usage:
+        USAGE_MANAGER.ensure_available()
     with audio_path.open("rb") as audio_file:
         transcript = client.audio.transcriptions.create(
             model=model,
             file=audio_file,
         )
+    if track_usage:
+        USAGE_MANAGER.record_response(transcript, model, "transcription")
     text = getattr(transcript, "text", "")
     if not text or not text.strip():
         raise RuntimeError("语音转写没有返回文本。")
@@ -97,6 +109,9 @@ def synthesize_speech(
 
     output_path = _timestamped_path("speech", ".mp3")
     try:
+        track_usage = _is_openai_client(client)
+        if track_usage:
+            USAGE_MANAGER.ensure_available()
         with client.audio.speech.with_streaming_response.create(
             model=model,
             voice=voice,
@@ -104,6 +119,8 @@ def synthesize_speech(
             instructions="自然、清晰、温和地使用普通话朗读。",
         ) as response:
             response.stream_to_file(output_path)
+        if track_usage:
+            USAGE_MANAGER.record(model, "speech")
     except Exception:
         output_path.unlink(missing_ok=True)
         raise

@@ -1,4 +1,4 @@
-"""本地资料库：显式导入文本文件，按项目保存并检索。"""
+"""本地资料库：显式导入常用文档，按项目保存并检索。"""
 
 from __future__ import annotations
 
@@ -10,8 +10,9 @@ from pathlib import Path
 
 from conversation_manager import DEFAULT_DATABASE
 
-ALLOWED_SUFFIXES = {".md", ".txt"}
-MAX_DOCUMENT_BYTES = 1_000_000
+ALLOWED_SUFFIXES = {".csv", ".docx", ".md", ".pdf", ".txt", ".xlsx"}
+MAX_DOCUMENT_BYTES = 20_000_000
+MAX_EXTRACTED_CHARS = 2_000_000
 CHUNK_SIZE = 1600
 CHUNK_OVERLAP = 200
 
@@ -76,10 +77,59 @@ class KnowledgeManager:
         if not source.is_file():
             raise ValueError("找不到这个资料文件。")
         if source.name.startswith(".") or source.suffix.lower() not in ALLOWED_SUFFIXES:
-            raise ValueError("资料库当前只接受非隐藏的 .md 和 .txt 文件。")
+            raise ValueError("资料库接受非隐藏的 PDF、Word、Excel、CSV、Markdown 和 TXT 文件。")
         if source.stat().st_size > MAX_DOCUMENT_BYTES:
-            raise ValueError("单份资料不能超过 1 MB。")
+            raise ValueError("单份资料不能超过 20 MB。")
         return source
+
+    @staticmethod
+    def _extract_text(source):
+        suffix = source.suffix.lower()
+        if suffix in {".md", ".txt", ".csv"}:
+            try:
+                content = source.read_text(encoding="utf-8")
+            except UnicodeDecodeError as error:
+                raise ValueError("文本资料必须是 UTF-8 编码。") from error
+        elif suffix == ".pdf":
+            from pypdf import PdfReader
+
+            reader = PdfReader(source)
+            if reader.is_encrypted:
+                raise ValueError("暂不支持加密 PDF。")
+            content = "\n\n".join(page.extract_text() or "" for page in reader.pages)
+        elif suffix == ".docx":
+            from docx import Document
+
+            document = Document(source)
+            lines = [paragraph.text for paragraph in document.paragraphs]
+            for table in document.tables:
+                for row in table.rows:
+                    lines.append("\t".join(cell.text for cell in row.cells))
+            content = "\n".join(lines)
+        elif suffix == ".xlsx":
+            from openpyxl import load_workbook
+
+            workbook = load_workbook(source, read_only=True, data_only=True)
+            lines = []
+            cell_count = 0
+            try:
+                for sheet in workbook.worksheets:
+                    lines.append(f"## 工作表：{sheet.title}")
+                    for row in sheet.iter_rows(values_only=True):
+                        values = ["" if value is None else str(value) for value in row]
+                        if any(values):
+                            lines.append("\t".join(values))
+                            cell_count += sum(bool(value) for value in values)
+                            if cell_count > 100_000:
+                                raise ValueError("Excel 非空单元格超过 10 万个，请拆分后导入。")
+            finally:
+                workbook.close()
+            content = "\n".join(lines)
+        else:
+            raise ValueError("不支持这个资料格式。")
+        if len(content) > MAX_EXTRACTED_CHARS:
+            raise ValueError("资料提取后的文字超过 200 万字符，请拆分后导入。")
+        return content
 
     @staticmethod
     def _chunks(text):
@@ -94,10 +144,7 @@ class KnowledgeManager:
         project = str(project).strip() or "default"
         if len(project) > 80:
             raise ValueError("项目名称不能超过 80 个字符。")
-        try:
-            content = source.read_text(encoding="utf-8")
-        except UnicodeDecodeError as error:
-            raise ValueError("资料必须是 UTF-8 编码文本。") from error
+        content = self._extract_text(source)
         chunks = self._chunks(content)
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
 

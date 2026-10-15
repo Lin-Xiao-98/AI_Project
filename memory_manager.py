@@ -4,6 +4,7 @@ import re
 import tempfile
 import unicodedata
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -35,6 +36,81 @@ SENSITIVE_PATTERNS = (
     ),
     re.compile(r"(?<!\d)\d{17}[0-9Xx](?!\d)"),
 )
+
+
+def _metadata_file():
+    return MEMORY_FILE.with_name("memory_metadata.json")
+
+
+def _load_metadata():
+    path = _metadata_file()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_metadata(metadata):
+    path = _metadata_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(
+        prefix="memory_meta_", suffix=".tmp", dir=path.parent
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+            json.dump(metadata, file, ensure_ascii=False, indent=2)
+            file.write("\n")
+        os.replace(temp_name, path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def _set_temporary_expiration(value):
+    days = max(int(os.getenv("TEMPORARY_MEMORY_DAYS", "30")), 1)
+    metadata = _load_metadata()
+    metadata[_normalise_text(value)] = {
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=days)).isoformat(
+            timespec="seconds"
+        )
+    }
+    _write_metadata(metadata)
+
+
+def _remove_expiration(value):
+    metadata = _load_metadata()
+    if metadata.pop(_normalise_text(value), None) is not None:
+        _write_metadata(metadata)
+
+
+def _prune_expired(memory):
+    metadata = _load_metadata()
+    if not metadata:
+        return False
+    now = datetime.now(timezone.utc)
+    kept = []
+    changed = False
+    for value in memory["temporary"]:
+        key = _normalise_text(value)
+        raw_expiration = (metadata.get(key) or {}).get("expires_at")
+        try:
+            expired = bool(
+                raw_expiration and datetime.fromisoformat(raw_expiration) <= now
+            )
+        except (TypeError, ValueError):
+            expired = False
+        if expired:
+            metadata.pop(key, None)
+            changed = True
+        else:
+            kept.append(value)
+    if changed:
+        memory["temporary"] = kept
+        _write_metadata(metadata)
+    return changed
 
 
 def _normalise_text(value):
@@ -93,7 +169,10 @@ def load_memory():
 
     try:
         with open(MEMORY_FILE, "r", encoding="utf-8") as file:
-            return _normalise_memory_structure(json.load(file))
+            memory = _normalise_memory_structure(json.load(file))
+        if _prune_expired(memory):
+            _write_memory(memory)
+        return memory
     except json.JSONDecodeError as error:
         raise ValueError(f"memory.json 格式错误：{error}") from error
 
@@ -226,6 +305,8 @@ def save_memory(new_memory, category, subcategory=None):
     bucket = _get_bucket(memory, category, subcategory, create=True)
     bucket.append(new_memory.strip())
     _write_memory(memory)
+    if category == "temporary":
+        _set_temporary_expiration(new_memory)
     return True
 
 
@@ -239,6 +320,7 @@ def update_memory(target_memory, new_memory, category, subcategory=None):
         return False
 
     old_category, old_subcategory, old_bucket, old_index = found
+    old_value = old_bucket[old_index]
     new_key = _normalise_text(new_memory)
 
     existing = _find_memory(memory, new_memory)
@@ -249,6 +331,8 @@ def update_memory(target_memory, new_memory, category, subcategory=None):
             if old_category == "projects" and not old_bucket:
                 del memory["projects"][old_subcategory]
             _write_memory(memory)
+            if old_category == "temporary":
+                _remove_expiration(old_value)
             return True
 
     target_bucket = _get_bucket(memory, category, subcategory, create=True)
@@ -268,6 +352,10 @@ def update_memory(target_memory, new_memory, category, subcategory=None):
             target_bucket.append(new_memory.strip())
 
     _write_memory(memory)
+    if old_category == "temporary":
+        _remove_expiration(old_value)
+    if category == "temporary":
+        _set_temporary_expiration(new_memory)
     return True
 
 
@@ -283,4 +371,6 @@ def delete_memory(target_memory):
     if category == "projects" and not bucket:
         del memory["projects"][subcategory]
     _write_memory(memory)
+    if category == "temporary":
+        _remove_expiration(target_memory)
     return True

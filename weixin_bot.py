@@ -15,7 +15,10 @@ from dotenv import load_dotenv
 
 from assistant_service import AssistantService
 from main import PROJECT_DIR
+from secret_store import get_secret, set_secret
+from single_instance import SingleInstance
 from weixin_api import DEFAULT_BASE_URL, WeixinApi, WeixinApiError
+from weixin_media import download_media_items
 
 load_dotenv(PROJECT_DIR / ".env")
 DATA_DIR = PROJECT_DIR / "data"
@@ -30,6 +33,7 @@ class WeixinAccount:
     owner_user_id: str
     base_url: str = DEFAULT_BASE_URL
     updates_buf: str = ""
+    last_context_token: str = ""
 
 
 def load_account(path: Path = STATE_FILE) -> WeixinAccount | None:
@@ -37,6 +41,12 @@ def load_account(path: Path = STATE_FILE) -> WeixinAccount | None:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        if path.resolve() == STATE_FILE.resolve():
+            legacy_token = str(data.pop("token", "")).strip()
+            token = get_secret("weixin_bot_token") or legacy_token
+            if legacy_token:
+                set_secret("weixin_bot_token", legacy_token)
+            data["token"] = token or ""
         account = WeixinAccount(**data)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise RuntimeError("个人微信本地登录状态损坏，请重新登录。") from error
@@ -52,7 +62,11 @@ def save_account(account: WeixinAccount, path: Path = STATE_FILE) -> None:
     )
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            json.dump(asdict(account), stream, ensure_ascii=False, separators=(",", ":"))
+            data = asdict(account)
+            if path.resolve() == STATE_FILE.resolve():
+                set_secret("weixin_bot_token", account.token)
+                data.pop("token", None)
+            json.dump(data, stream, ensure_ascii=False, separators=(",", ":"))
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temp_name, path)
@@ -183,11 +197,22 @@ def run() -> None:
             content = extract_text(message)
             if not content or not context_token:
                 continue
+            account.last_context_token = context_token
+            save_account(account)
             if not service.conversations.claim_channel_message("weixin", message_id):
                 continue
             try:
+                try:
+                    attachments = download_media_items(message)
+                except Exception as error:
+                    attachments = []
+                    print(f"微信媒体下载失败，继续处理文字：{error}")
                 reply = service.respond(
-                    "weixin", f"{account.bot_id}:{from_user}", content, False
+                    "weixin",
+                    f"{account.bot_id}:{from_user}",
+                    content,
+                    False,
+                    attachments,
                 )
                 api.send_text(from_user, limit_reply(reply), context_token)
                 service.conversations.complete_channel_message("weixin", message_id)
@@ -198,11 +223,35 @@ def run() -> None:
             except Exception as error:
                 service.conversations.release_channel_message("weixin", message_id)
                 print(f"个人微信消息处理失败：{error}")
+        if account.last_context_token:
+            for reminder in service.reminders.claim_remote_due():
+                try:
+                    api.send_text(
+                        account.owner_user_id,
+                        f"AI 助手提醒：{reminder['title']}",
+                        account.last_context_token,
+                    )
+                    service.reminders.mark_remote_notified(reminder["id"])
+                except Exception as error:
+                    print(f"个人微信提醒发送失败，将稍后重试：{error}")
+        if account.last_context_token and service.proactive.is_due():
+            try:
+                proactive_message = service.proactive.compose(service.client)
+                api.send_text(
+                    account.owner_user_id,
+                    limit_reply(proactive_message),
+                    account.last_context_token,
+                )
+                service.proactive.record_sent()
+            except Exception as error:
+                service.proactive.record_failure()
+                print(f"主动消息发送失败，将稍后重试：{error}")
 
 
 if __name__ == "__main__":
     try:
-        run()
+        with SingleInstance("weixin_bot"):
+            run()
     except (KeyboardInterrupt, EOFError):
         print("个人微信助手已停止。")
     except RuntimeError as error:

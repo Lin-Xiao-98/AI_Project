@@ -44,6 +44,7 @@ class ToolManagerTests(unittest.TestCase):
         self.assertEqual(
             names,
             {
+                "search_web",
                 "get_current_time",
                 "list_project_files",
                 "read_project_text_file",

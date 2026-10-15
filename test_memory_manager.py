@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -158,6 +159,17 @@ class MemoryManagerTests(unittest.TestCase):
         memory_manager.save_memory("项目", "projects", "AI_Project")
         memory_manager.save_memory("临时", "temporary", "")
         self.assertEqual(memory_manager.get_memory_count(), 3)
+
+    def test_expired_temporary_memory_is_pruned(self):
+        memory_manager.save_memory("临时活动安排", "temporary")
+        metadata_file = self.memory_file.with_name("memory_metadata.json")
+        metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
+        key = memory_manager._normalise_text("临时活动安排")
+        metadata[key]["expires_at"] = (
+            datetime.now(timezone.utc) - timedelta(seconds=1)
+        ).isoformat()
+        metadata_file.write_text(json.dumps(metadata), encoding="utf-8")
+        self.assertNotIn("临时活动安排", memory_manager.get_memory_text())
 
 
 if __name__ == "__main__":

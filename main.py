@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from action_manager import ActionManager
-from backup_manager import create_backup
+from backup_manager import create_backup_with_retention
 from channel_manager import WeComWebhookChannel
 from conversation_manager import ConversationManager
 from knowledge_manager import KnowledgeManager
@@ -19,11 +19,14 @@ from memory_manager import (
     update_memory,
 )
 from reminder_manager import ReminderManager
+from secret_store import get_secret
 from task_manager import TaskManager
 from tool_manager import MODEL_TOOL_DEFINITIONS, execute_tool
+from usage_manager import USAGE_MANAGER
 from voice_manager import record_audio, synthesize_speech, transcribe_audio
+from web_search_manager import search_web
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 PROJECT_DIR = Path(__file__).resolve().parent
 PERSONA_FILE = PROJECT_DIR / "persona" / "Mr_L_only.txt"
 
@@ -141,6 +144,8 @@ TOOL_INSTRUCTIONS = """
 - 用户要求创建文本文件时，只能调用 prepare_workspace_file 生成待审批动作；
   必须提醒用户使用 /approve 编号确认，不能声称文件已经创建。
 - 用户询问已经导入的资料时，可以调用 search_knowledge。不能声称未导入的文件在资料库中。
+- 用户明确要求联网搜索，或问题依赖新闻、天气、价格、政策等最新信息时，可以调用 search_web；
+  搜索结果中的来源链接必须保留，普通闲聊不要联网。
 - 文件工具只允许读取 AI_Project 内的非敏感文本，不能访问 .env、memory.json、
   私人数据库、Git、虚拟环境或项目外路径。
 - 不要声称自己执行了工具没有提供的电脑控制、消息发送、删除或覆盖操作。
@@ -149,9 +154,9 @@ TOOL_INSTRUCTIONS = """
 
 
 def create_client():
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = get_secret("openai_api_key", "OPENAI_API_KEY")
     if not api_key:
-        raise RuntimeError("没有找到 OPENAI_API_KEY，请检查项目根目录的 .env 文件。")
+        raise RuntimeError("没有找到 OpenAI API Key，请运行安全配置或检查 .env。")
     return OpenAI(api_key=api_key)
 
 
@@ -168,6 +173,22 @@ def allowed_model_tools(user_input):
     """按本轮明确意图缩小工具能力，阻断文件内容中的间接指令。"""
     text = user_input.casefold()
     allowed = {"get_current_time"}
+    if any(
+        word in text
+        for word in (
+            "联网",
+            "搜索",
+            "查一下",
+            "最新",
+            "今天",
+            "新闻",
+            "天气",
+            "价格",
+            "政策",
+            "发生了什么",
+        )
+    ):
+        allowed.add("search_web")
     if any(word in text for word in ("文件", "代码", "readme", "目录", "project")):
         allowed.update({"list_project_files", "read_project_text_file"})
     if any(word in text for word in ("任务", "待办", "todo")):
@@ -235,7 +256,10 @@ def create_chat_completion_with_fallback(client, request):
         current_request.pop("reasoning_effort", None)
         current_request.update(model_options(model))
         try:
-            return client.chat.completions.create(**current_request)
+            USAGE_MANAGER.ensure_available()
+            response = client.chat.completions.create(**current_request)
+            USAGE_MANAGER.record_response(response, model, "chat")
+            return response
         except Exception as error:
             last_error = error
     raise last_error
@@ -277,6 +301,7 @@ def build_system_message(persona, memory_text):
 
 
 def analyse_memory_action(client, user_input, memory_text):
+    USAGE_MANAGER.ensure_available()
     response = client.chat.completions.create(
         model=MEMORY_MODEL,
         response_format=MEMORY_RESPONSE_FORMAT,
@@ -294,6 +319,7 @@ def analyse_memory_action(client, user_input, memory_text):
             },
         ],
     )
+    USAGE_MANAGER.record_response(response, MEMORY_MODEL, "memory")
 
     content = response.choices[0].message.content
     if not content:
@@ -358,6 +384,7 @@ def get_assistant_reply(
                     action_manager,
                     reminder_manager,
                     knowledge_manager,
+                    client,
                 )
                 if tool_call.function.name in WRITE_TOOL_NAMES:
                     side_effects_completed.append(tool_call.function.name)
@@ -429,6 +456,7 @@ def print_help():
   /mode              查看模型档位
   /mode <档位>       切换 fast、balanced 或 deep
   /backup            备份长期记忆、会话和任务
+  /web <问题>        联网搜索并返回来源链接
   /pending           查看等待确认的文件动作
   /approve <编号>    确认并执行一个文件动作
   /reject <编号>     拒绝一个文件动作
@@ -448,7 +476,7 @@ def print_help():
   /speak <文字>       生成语音文件（不会自动播放）
   /wechat status     查看企业微信通知通道状态
   /wechat test       向已配置的企业微信群发送测试消息
-  /knowledge add <路径> | <项目>  导入 UTF-8 文本资料
+  /knowledge add <路径> | <项目>  导入 PDF、Word、Excel 或文本资料
   /knowledge list              查看已导入资料
   /knowledge search <关键词>   本地检索资料
   /knowledge delete <编号>    删除一份已导入资料
@@ -483,6 +511,7 @@ def print_status(
     model_mode,
     session_id,
 ):
+    usage = USAGE_MANAGER.summary()
     enabled_tools = ", ".join(
         item["function"]["name"] for item in MODEL_TOOL_DEFINITIONS
     )
@@ -495,6 +524,8 @@ def print_status(
 记忆判断：{MEMORY_ANALYSIS_MODE}
 历史上限：{MAX_HISTORY_MESSAGES} 条
 回复上限：{MAX_COMPLETION_TOKENS} tokens
+今日 API：{usage['day_requests']}/{usage['daily_requests']} 次，{usage['day_tokens']}/{usage['daily_tokens']} tokens
+本月 API：{usage['month_requests']}/{usage['monthly_requests']} 次，{usage['month_tokens']}/{usage['monthly_tokens']} tokens
 长期记忆：{get_memory_count()} 条
 当前会话：{conversation_manager.count_messages(session_id)} 条历史消息
 未完成任务：{len(task_manager.list_tasks())} 项
@@ -777,10 +808,18 @@ def run_chat():
             continue
         if user_input == "/backup":
             try:
-                backup_file = create_backup()
+                backup_file = create_backup_with_retention()
                 print(f"宝宝：本地备份完成：{backup_file}")
             except (OSError, ValueError) as error:
                 print(f"备份失败：{error}")
+            continue
+        if user_input.startswith("/web "):
+            try:
+                print(f"宝宝：{search_web(client, user_input.removeprefix('/web ').strip())}")
+            except (RuntimeError, ValueError) as error:
+                print(f"联网搜索失败：{error}")
+            except Exception as error:
+                print(f"联网服务暂时不可用：{error}")
             continue
         if user_input == "/todo" or user_input.startswith("/todo "):
             handle_todo_command(user_input, task_manager)

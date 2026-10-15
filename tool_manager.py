@@ -31,6 +31,22 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "search_web",
+            "description": "联网检索最新或可能变化的信息，并返回带来源链接的答案。仅在本地知识和常识不足时使用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "具体、简洁的搜索问题。"}
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_knowledge",
             "description": "检索用户已经明确导入本地资料库的文本片段。",
             "parameters": {
@@ -270,13 +286,20 @@ def execute_tool(
     action_manager=None,
     reminder_manager=None,
     knowledge_manager=None,
+    client=None,
 ):
     """执行白名单工具，并将每次尝试写入本地审计日志。"""
     if not isinstance(arguments, dict):
         raise ValueError("工具参数必须是 JSON 对象")
 
     try:
-        if name == "get_current_time":
+        if name == "search_web":
+            if client is None:
+                raise ValueError("联网搜索客户端尚未初始化")
+            from web_search_manager import search_web
+
+            result = {"answer": search_web(client, arguments["query"])}
+        elif name == "get_current_time":
             result = {
                 "local_time": datetime.now().astimezone().isoformat(timespec="seconds")
             }

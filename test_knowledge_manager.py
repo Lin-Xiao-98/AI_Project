@@ -2,6 +2,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from docx import Document
+from openpyxl import Workbook
+
 from knowledge_manager import KnowledgeManager
 
 
@@ -38,6 +41,23 @@ class KnowledgeManagerTests(unittest.TestCase):
         empty.write_text("", encoding="utf-8")
         with self.assertRaises(ValueError):
             self.manager.add_document(empty)
+
+    def test_imports_word_and_excel(self):
+        word_path = self.root / "notes.docx"
+        word = Document()
+        word.add_paragraph("Word 文档里的项目结论")
+        word.save(word_path)
+        excel_path = self.root / "plan.xlsx"
+        workbook = Workbook()
+        workbook.active.append(["事项", "负责人"])
+        workbook.active.append(["完成联网功能", "小林"])
+        workbook.save(excel_path)
+        workbook.close()
+
+        self.assertTrue(self.manager.add_document(word_path, "办公资料")["added"])
+        self.assertTrue(self.manager.add_document(excel_path, "办公资料")["added"])
+        self.assertIn("项目结论", self.manager.search("项目结论")[0]["content"])
+        self.assertIn("完成联网功能", self.manager.search("完成联网功能")[0]["content"])
 
     def test_project_filter_separates_context(self):
         one = self.root / "one.txt"

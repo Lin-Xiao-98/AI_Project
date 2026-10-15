@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from conversation_manager import DEFAULT_DATABASE, PROJECT_DIR
 from memory_manager import MEMORY_FILE, get_memory_count
+from secret_store import get_secret
 
 
 def check(label, passed, detail=""):
@@ -24,7 +25,7 @@ def main():
     results.append(
         check("Python 版本", sys.version_info >= (3, 11), sys.version.split()[0])
     )
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    api_key = get_secret("openai_api_key", "OPENAI_API_KEY") or ""
     has_key = bool(api_key and api_key != "your_api_key_here")
     results.append(check("OpenAI API Key", has_key, "已配置" if has_key else "未配置"))
 
@@ -57,6 +58,8 @@ def main():
         "memory_manager.py",
         "voice_manager.py",
         "wecom_bot.py",
+        "assistant_guardian.py",
+        "assistant_dashboard.py",
         "启动AI助手.bat",
     )
     missing = [name for name in required_files if not (PROJECT_DIR / name).exists()]
