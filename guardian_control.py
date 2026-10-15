@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import subprocess
@@ -29,6 +30,30 @@ def _run(arguments: list[str], check: bool = True):
     )
 
 
+def _process_command_line(pid) -> str:
+    if not isinstance(pid, int) or pid <= 0:
+        return ""
+    return _run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine",
+        ],
+        check=False,
+    ).stdout.strip()
+
+
+def _pid_running(pid) -> bool:
+    if not isinstance(pid, int) or pid <= 0 or os.name != "nt":
+        return False
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return False
+    ctypes.windll.kernel32.CloseHandle(handle)
+    return True
+
+
 def read_status() -> dict:
     if not STATUS_FILE.exists():
         return {"state": "not_started", "detail": "尚未启动"}
@@ -36,7 +61,13 @@ def read_status() -> dict:
         data = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
         return {"state": "unknown", "detail": "状态文件无法读取"}
-    return data if isinstance(data, dict) else {"state": "unknown"}
+    if not isinstance(data, dict):
+        return {"state": "unknown"}
+    if data.get("state") in {"running", "restarting"} and not _pid_running(
+        data.get("guardian_pid")
+    ):
+        return {**data, "state": "stopped", "detail": "后台进程已经结束"}
+    return data
 
 
 def start_guardian() -> None:
@@ -62,15 +93,7 @@ def stop_guardian() -> None:
     status = read_status()
     pid = status.get("guardian_pid")
     if isinstance(pid, int) and pid > 0:
-        command = _run(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-Command",
-                f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine",
-            ],
-            check=False,
-        ).stdout
+        command = _process_command_line(pid)
         if "assistant_guardian.py" in command:
             _run(["taskkill.exe", "/PID", str(pid), "/T", "/F"], check=False)
     _run(["schtasks.exe", "/End", "/TN", TASK_NAME], check=False)

@@ -17,17 +17,23 @@ def create_backup(
     memory_file=MEMORY_FILE,
     database_file=DEFAULT_DATABASE,
     backup_directory=BACKUP_DIR,
+    metadata_file=None,
 ):
     """备份长期记忆和本地数据库；永远不包含 .env。"""
     memory_file = Path(memory_file)
     database_file = Path(database_file)
     backup_directory = Path(backup_directory)
     backup_directory.mkdir(parents=True, exist_ok=True)
+    metadata_file = Path(metadata_file) if metadata_file else memory_file.with_name(
+        "memory_metadata.json"
+    )
 
     sources = []
     database_snapshot = None
     if memory_file.exists():
         sources.append((memory_file, "memory.json"))
+    if metadata_file.exists():
+        sources.append((metadata_file, "memory_metadata.json"))
     if database_file.exists():
         snapshot_descriptor, snapshot_name = tempfile.mkstemp(
             prefix="assistant_snapshot_", suffix=".db", dir=backup_directory
@@ -118,6 +124,7 @@ def restore_backup(
     memory_file=MEMORY_FILE,
     database_file=DEFAULT_DATABASE,
     backup_directory=BACKUP_DIR,
+    metadata_file=None,
 ):
     """校验备份后恢复；恢复前自动再备份一次当前数据。"""
     backup_file = Path(backup_file).expanduser().resolve()
@@ -125,9 +132,12 @@ def restore_backup(
         raise ValueError("请选择有效的 ZIP 备份文件。")
     memory_file = Path(memory_file)
     database_file = Path(database_file)
+    metadata_file = Path(metadata_file) if metadata_file else memory_file.with_name(
+        "memory_metadata.json"
+    )
     backup_directory = Path(backup_directory)
     backup_directory.mkdir(parents=True, exist_ok=True)
-    allowed = {"memory.json", "assistant.db"}
+    allowed = {"memory.json", "memory_metadata.json", "assistant.db"}
     with zipfile.ZipFile(backup_file) as archive:
         names = set(archive.namelist())
         if not names or not names.issubset(allowed):
@@ -147,6 +157,12 @@ def restore_backup(
                     result = connection.execute("PRAGMA integrity_check").fetchone()
                     if not result or result[0] != "ok":
                         raise ValueError("备份中的数据库完整性检查失败。")
+            if "memory_metadata.json" in names:
+                restored_metadata = temp_root / "memory_metadata.json"
+                restored_metadata.write_bytes(archive.read("memory_metadata.json"))
+                metadata = json.loads(restored_metadata.read_text(encoding="utf-8"))
+                if not isinstance(metadata, dict):
+                    raise ValueError("备份中的临时记忆元数据格式错误。")
 
             safety_backup = create_backup_with_retention(
                 memory_file, database_file, backup_directory
@@ -157,4 +173,9 @@ def restore_backup(
             if "assistant.db" in names:
                 database_file.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(restored_database, database_file)
+            if "memory_metadata.json" in names:
+                metadata_file.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(restored_metadata, metadata_file)
+            elif "memory.json" in names:
+                metadata_file.unlink(missing_ok=True)
     return safety_backup

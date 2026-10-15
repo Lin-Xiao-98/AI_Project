@@ -75,21 +75,25 @@ class BackupManagerTests(unittest.TestCase):
 
     def test_restore_validates_and_restores_data(self):
         memory = self.root / "memory.json"
+        metadata = self.root / "memory_metadata.json"
         database = self.root / "assistant.db"
         backups = self.root / "backups"
         memory.write_text('{"user": {"preferences": ["原始记忆"]}}', encoding="utf-8")
+        metadata.write_text('{"临时记忆": {"expires_at": "2099-01-01T00:00:00+00:00"}}', encoding="utf-8")
         with closing(sqlite3.connect(database)) as connection:
             connection.execute("CREATE TABLE sample (value TEXT)")
             connection.execute("INSERT INTO sample VALUES ('original')")
             connection.commit()
         backup = create_backup(memory, database, backups)
         memory.write_text("{}", encoding="utf-8")
+        metadata.write_text("{}", encoding="utf-8")
         with closing(sqlite3.connect(database)) as connection:
             connection.execute("UPDATE sample SET value = 'changed'")
             connection.commit()
         safety = restore_backup(backup, memory, database, backups)
         self.assertTrue(safety.exists())
         self.assertIn("原始记忆", memory.read_text(encoding="utf-8"))
+        self.assertIn("临时记忆", metadata.read_text(encoding="utf-8"))
         with closing(sqlite3.connect(database)) as connection:
             self.assertEqual(connection.execute("SELECT value FROM sample").fetchone()[0], "original")
 

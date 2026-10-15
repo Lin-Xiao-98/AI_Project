@@ -60,6 +60,8 @@ def main():
         "wecom_bot.py",
         "assistant_guardian.py",
         "assistant_dashboard.py",
+        "diagnostics_manager.py",
+        "export_manager.py",
         "启动AI助手.bat",
     )
     missing = [name for name in required_files if not (PROJECT_DIR / name).exists()]

@@ -9,6 +9,8 @@ from tkinter import filedialog, messagebox
 
 from backup_manager import BACKUP_DIR, create_backup_with_retention, restore_backup
 from conversation_manager import PROJECT_DIR
+from diagnostics_manager import create_diagnostic_report
+from export_manager import export_personal_data
 from guardian_control import read_status, start_guardian, stop_guardian
 from usage_manager import USAGE_MANAGER
 
@@ -19,7 +21,7 @@ class Dashboard(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("小林 AI 助手控制台")
-        self.geometry("560x430")
+        self.geometry("560x505")
         self.resizable(False, False)
         self.configure(bg="#f5f6fa")
         self.status_text = tk.StringVar()
@@ -56,6 +58,8 @@ class Dashboard(tk.Tk):
         self._button(buttons, "打开数据目录", self.open_data, 1, 1)
         self._button(buttons, "恢复备份", self.restore, 2, 0)
         self._button(buttons, "刷新状态", self.refresh, 2, 1)
+        self._button(buttons, "导出个人数据", self.export_data, 3, 0)
+        self._button(buttons, "生成诊断报告", self.diagnostics, 3, 1)
 
         tk.Label(
             self,
@@ -144,13 +148,36 @@ class Dashboard(tk.Tk):
             "将用所选备份替换当前记忆和数据库。恢复前会自动再备份当前状态，是否继续？",
         ):
             return
+        was_running = read_status().get("state") in {"running", "restarting"}
         try:
-            stop_guardian()
+            if was_running:
+                stop_guardian()
             safety = restore_backup(selected)
-            start_guardian()
             messagebox.showinfo("恢复完成", f"恢复成功。恢复前的数据已备份为：\n{safety.name}")
         except Exception as error:
             messagebox.showerror("恢复失败", str(error))
+        finally:
+            if was_running:
+                try:
+                    start_guardian()
+                except Exception as error:
+                    messagebox.showerror("后台重启失败", str(error))
+
+    def export_data(self):
+        try:
+            path = export_personal_data()
+            messagebox.showinfo("导出完成", f"个人数据已导出到 D 盘：\n{path}")
+        except Exception as error:
+            messagebox.showerror("导出失败", str(error))
+
+    def diagnostics(self):
+        try:
+            path = create_diagnostic_report()
+            messagebox.showinfo(
+                "诊断完成", f"隐私安全的诊断报告已生成：\n{path}"
+            )
+        except Exception as error:
+            messagebox.showerror("诊断失败", str(error))
 
 
 if __name__ == "__main__":

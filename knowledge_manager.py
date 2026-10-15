@@ -68,6 +68,40 @@ class KnowledgeManager:
 
                 CREATE INDEX IF NOT EXISTS knowledge_chunks_document
                 ON knowledge_chunks(document_id, position);
+
+                CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+                    content,
+                    document_id UNINDEXED,
+                    position UNINDEXED,
+                    tokenize='trigram'
+                );
+
+                CREATE TRIGGER IF NOT EXISTS knowledge_chunks_fts_insert
+                AFTER INSERT ON knowledge_chunks BEGIN
+                    INSERT INTO knowledge_fts(rowid, content, document_id, position)
+                    VALUES (new.id, new.content, new.document_id, new.position);
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS knowledge_chunks_fts_delete
+                AFTER DELETE ON knowledge_chunks BEGIN
+                    DELETE FROM knowledge_fts WHERE rowid = old.id;
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS knowledge_chunks_fts_update
+                AFTER UPDATE ON knowledge_chunks BEGIN
+                    DELETE FROM knowledge_fts WHERE rowid = old.id;
+                    INSERT INTO knowledge_fts(rowid, content, document_id, position)
+                    VALUES (new.id, new.content, new.document_id, new.position);
+                END;
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO knowledge_fts(rowid, content, document_id, position)
+                SELECT c.id, c.content, c.document_id, c.position
+                FROM knowledge_chunks c
+                LEFT JOIN knowledge_fts f ON f.rowid = c.id
+                WHERE f.rowid IS NULL
                 """
             )
 
@@ -203,6 +237,31 @@ class KnowledgeManager:
             raise ValueError("检索词不能为空。")
         if not isinstance(limit, int) or not 1 <= limit <= 10:
             raise ValueError("检索数量必须在 1 到 10 之间。")
+        if len(query) >= 3:
+            escaped_fts = query.replace('"', '""')
+            fts_parameters = [f'"{escaped_fts}"']
+            fts_project_sql = ""
+            if project:
+                fts_project_sql = " AND d.project = ?"
+                fts_parameters.append(project)
+            fts_parameters.append(limit)
+            with self._connect() as connection:
+                rows = connection.execute(
+                    f"""
+                    SELECT d.id AS document_id, d.title, d.project,
+                           c.position, c.content
+                    FROM knowledge_fts
+                    JOIN knowledge_chunks c ON c.id = knowledge_fts.rowid
+                    JOIN knowledge_documents d ON d.id = c.document_id
+                    WHERE knowledge_fts MATCH ?{fts_project_sql}
+                    ORDER BY bm25(knowledge_fts), d.id DESC, c.position ASC
+                    LIMIT ?
+                    """,
+                    fts_parameters,
+                ).fetchall()
+            if rows:
+                return [dict(row) for row in rows]
+
         escaped_query = (
             query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         )

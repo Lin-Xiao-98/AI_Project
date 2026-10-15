@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+import sqlite3
 import threading
 
 from action_manager import ActionManager
 from backup_manager import create_backup_with_retention
 from conversation_manager import ConversationManager
+from diagnostics_manager import create_diagnostic_report
+from export_manager import export_personal_data
 from knowledge_manager import KnowledgeManager
 from main import (
     DEFAULT_MODE,
@@ -46,7 +49,8 @@ class AssistantService:
         self.reminders = ReminderManager()
         self.knowledge = KnowledgeManager()
         self.proactive = ProactiveManager()
-        self.model_mode = model_mode
+        saved_mode = self.conversations.get_setting("chat_mode", model_mode)
+        self.model_mode = saved_mode if saved_mode in MODEL_PROFILES else model_mode
         self._lock = threading.Lock()
 
     def respond(self, channel, subject, user_input, process_memory=True, attachments=None):
@@ -56,16 +60,14 @@ class AssistantService:
         if len(user_input) > 8000:
             raise ValueError("消息过长，请控制在 8000 个字符以内。")
         try:
-            command_reply = self._remote_command(user_input)
-        except (ValueError, RuntimeError) as error:
+            command_reply = self._remote_command(user_input, channel, subject)
+        except (OSError, sqlite3.Error, ValueError, RuntimeError) as error:
             return f"命令未执行：{error}"
         if command_reply is not None:
             return command_reply
         if user_input.startswith("/"):
             return (
-                "暂不支持这个命令。常用命令：/状态、/联网 问题、"
-                "/todo list、/remind list、/memory、/knowledge list、"
-                "/主动消息 状态。"
+                "暂不支持这个命令。发送 /help 查看全部快捷命令。"
             )
 
         with self._lock:
@@ -135,17 +137,46 @@ class AssistantService:
                 enriched += f"\n\n[已安全保存附件：{path.name}]"
         return [{"type": "text", "text": enriched}, *images]
 
-    def _remote_command(self, text):
+    def _remote_command(self, text, channel=None, subject=None):
+        if text in {"/help", "/帮助"}:
+            return (
+                "快捷命令：\n"
+                "/状态　查看运行与 API 安全用量\n"
+                "/mode fast|balanced|deep　切换模型档位\n"
+                "/联网 问题　检索最新网络信息\n"
+                "/todo add 内容｜list｜done 编号｜delete 编号\n"
+                "/remind add YYYY-MM-DD HH:MM|内容｜list｜done 编号｜delete 编号\n"
+                "/memory　查看长期记忆\n"
+                "/knowledge list｜search 关键词\n"
+                "/pending｜/approve 编号｜/reject 编号\n"
+                "/主动消息 状态｜开启｜关闭\n"
+                "/backup　立即备份；/export　导出个人数据\n"
+                "/diagnostics　生成隐私安全诊断报告\n"
+                "/new　开始新聊天上下文（长期记忆保留）"
+            )
         if text == "/状态":
             usage = USAGE_MANAGER.summary()
             proactive = self.proactive.status()
             return (
                 "AI 助手运行正常。\n"
+                f"模型档位：{self.model_mode}\n"
                 f"今日 API：{usage['day_requests']}/{usage['daily_requests']} 次，"
                 f"{usage['day_tokens']}/{usage['daily_tokens']} tokens\n"
                 f"主动消息：{'开启' if proactive['enabled'] else '关闭'}；"
                 f"安静时段 {proactive['quiet_hours']}"
             )
+        if text == "/mode":
+            return (
+                f"当前模型档位：{self.model_mode}\n"
+                "fast 最省额度；balanced 更强；deep 用于复杂分析。"
+            )
+        if text.startswith("/mode "):
+            requested = text.removeprefix("/mode ").strip().lower()
+            if requested not in MODEL_PROFILES:
+                return "可用模型档位：fast、balanced、deep。"
+            self.model_mode = requested
+            self.conversations.set_setting("chat_mode", requested)
+            return f"已切换到 {requested}（{MODEL_PROFILES[requested]['model']}）。"
         if text.startswith("/联网 "):
             return search_web(self.client, text.removeprefix("/联网 ").strip())
         if text == "/todo list":
@@ -158,6 +189,12 @@ class AssistantService:
         if text.startswith("/todo add "):
             task_id = self.tasks.add_task(text.removeprefix("/todo add ").strip())
             return f"已添加待办 #{task_id}。"
+        if text.startswith("/todo done "):
+            task_id = text.removeprefix("/todo done ").strip()
+            return "待办已完成。" if self.tasks.complete_task(task_id) else "未找到该未完成待办。"
+        if text.startswith("/todo delete "):
+            task_id = text.removeprefix("/todo delete ").strip()
+            return "待办已删除。" if self.tasks.delete_task(task_id) else "未找到该待办。"
         if text == "/remind list":
             reminders = self.reminders.list_reminders()
             return "提醒事项：\n" + (
@@ -175,6 +212,20 @@ class AssistantService:
             due_time, title = (part.strip() for part in payload.split("|", 1))
             reminder_id = self.reminders.add_reminder(title, due_time)
             return f"已添加提醒 #{reminder_id}。"
+        if text.startswith("/remind done "):
+            reminder_id = text.removeprefix("/remind done ").strip()
+            return (
+                "提醒已完成。"
+                if self.reminders.complete_reminder(reminder_id)
+                else "未找到该未完成提醒。"
+            )
+        if text.startswith("/remind delete "):
+            reminder_id = text.removeprefix("/remind delete ").strip()
+            return (
+                "提醒已删除。"
+                if self.reminders.delete_reminder(reminder_id)
+                else "未找到该提醒。"
+            )
         if text == "/memory":
             memory = get_memory_text()
             return (memory or "目前没有长期记忆。")[:8000]
@@ -187,6 +238,18 @@ class AssistantService:
                 )
                 if documents
                 else "资料库为空。"
+            )
+        if text.startswith("/knowledge search "):
+            query = text.removeprefix("/knowledge search ").strip()
+            results = self.knowledge.search(query)
+            return "本地资料检索：\n" + (
+                "\n".join(
+                    f"- {item['title']}（{item['project']}）："
+                    f"{item['content'].replace(chr(10), ' ')[:300]}"
+                    for item in results
+                )
+                if results
+                else "没有找到匹配资料。"
             )
         if text == "/pending":
             actions = self.actions.list_pending()
@@ -205,6 +268,17 @@ class AssistantService:
         if text == "/backup":
             path = create_backup_with_retention()
             return f"备份完成：{path.name}（保存在 D 盘 backups 目录）"
+        if text == "/export":
+            path = export_personal_data()
+            return f"个人数据已导出：{path.name}（保存在 D 盘 exports 目录，请妥善保管）"
+        if text == "/diagnostics":
+            path = create_diagnostic_report()
+            return f"诊断报告已生成：{path.name}（不含密钥和私人正文）"
+        if text == "/new":
+            if not channel or not subject:
+                return "这个命令只能在聊天通道中使用。"
+            self.conversations.start_new_scoped_session(channel, subject)
+            return "新的聊天上下文已经开始，长期记忆仍然保留。"
         if text in {"/主动消息 开启", "/proactive on"}:
             self.proactive.set_enabled(True)
             return "主动消息已开启：每天最多 1 条，安静时段不会打扰你。"

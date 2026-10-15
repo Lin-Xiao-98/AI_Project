@@ -145,6 +145,32 @@ class ConversationManager:
             )
         return session_id
 
+    def start_new_scoped_session(self, channel, subject):
+        """为指定外部聊天开始新上下文，同时保留旧会话记录。"""
+        if not isinstance(channel, str) or not channel.strip():
+            raise ValueError("通道名称不能为空")
+        if not isinstance(subject, str) or not subject.strip():
+            raise ValueError("会话主体不能为空")
+        digest = hashlib.sha256(
+            f"{channel.strip()}:{subject.strip()}".encode("utf-8")
+        ).hexdigest()
+        setting_key = f"channel_session:{digest}"
+        session_id = uuid.uuid4().hex
+        now = _utc_now()
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO sessions (id, created_at, updated_at) VALUES (?, ?, ?)",
+                (session_id, now, now),
+            )
+            connection.execute(
+                """
+                INSERT INTO settings (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (setting_key, session_id),
+            )
+        return session_id
+
     def claim_channel_message(self, channel, message_id, lease_seconds=600):
         if not channel or not message_id:
             raise ValueError("通道和消息编号不能为空")

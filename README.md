@@ -1,4 +1,4 @@
-# 小林的个人 AI 助手 V1.1
+# 小林的个人 AI 助手 V1.2
 
 这是一个运行在 `D:\Workspace\AI_Project` 的本地个人助手。它保留原有 Persona 和长期记忆，并加入会话、任务、提醒、资料库、安全工具、语音和企业微信入口。
 
@@ -6,6 +6,7 @@
 
 双击 `启动AI助手.bat`，输入普通文字即可聊天。输入 `/help` 可查看全部命令。双击
 `打开AI助手控制台.bat` 可查看个人微信后台和 API 本机统计、启动或停止后台、立即备份。
+控制台也可以一键导出个人数据或生成不含私人正文的诊断报告。
 
 如需自行验收，双击 `验收AI助手.bat`。验收过程不会联网、不会录音、不会播放声音，也不会改动亮度和音量。
 
@@ -17,6 +18,7 @@
 - 私人记忆、会话、任务、提醒、资料均只保存在已被 Git 忽略的 `data/`
 - 本地任务清单、一次性提醒、失败后重试的企业微信提醒
 - 本地资料库：按项目导入、检索、去重和删除 PDF、Word、Excel、CSV、Markdown、TXT
+- SQLite FTS5 本地全文索引，中文资料量增加后仍能快速检索，且不额外消耗 API
 - 受控读取项目文本；敏感目录和越界路径永久禁止
 - 文件创建先进入待审批区，必须由本人明确使用 `/approve` 确认，且永不覆盖已有文件
 - fast / balanced / deep 三档模型与故障回退
@@ -31,7 +33,9 @@
 - 登录后自动后台运行、崩溃自动重启、日志轮转和每日备份
 - OpenAI Key 与微信令牌使用 Windows DPAPI 加密，只能由当前 Windows 用户解密
 - API 每日/月度请求与 token 硬上限、本机用量统计
-- SQLite 一致性备份、14 份/30 天保留策略、工具审计、消息排重和单一所有者白名单
+- SQLite 一致性备份（含临时记忆到期信息）、14 份/30 天保留策略和恢复后后台自启动
+- 工具审计正文脱敏、5 MB 自动轮转、消息排重和单一所有者白名单
+- 隐私安全诊断报告与可迁移个人数据 ZIP 导出（均不包含密钥）
 - 离线自动化测试与一键验收
 
 ## 常用命令
@@ -66,6 +70,8 @@
 /wechat test                  显式发送测试通知
 /weixin                      个人微信通道说明（实际连接使用单独启动脚本）
 /backup                       创建不含密钥的一致性备份
+/export                       导出个人数据 ZIP（不含密钥）
+/diagnostics                  生成隐私安全诊断报告
 /exit                         退出
 ```
 
@@ -148,17 +154,26 @@ WEIXIN_ENABLED=true
 
 ```text
 /状态
+/mode fast|balanced|deep
 /联网 你的问题
 /todo add 任务内容
 /todo list
+/todo done 编号
+/todo delete 编号
 /remind add 2026-10-16 18:30|提醒内容
 /remind list
+/remind done 编号
+/remind delete 编号
 /memory
 /knowledge list
+/knowledge search 关键词
 /pending
 /approve 编号
 /reject 编号
 /backup
+/export
+/diagnostics
+/new
 /主动消息 开启|关闭|状态
 ```
 
@@ -175,9 +190,11 @@ WEIXIN_ENABLED=true
 - `data/secrets.json`：Windows DPAPI 加密密钥
 - `data/logs/`：后台守护与个人微信日志（自动轮转）
 - `data/tool_audit.jsonl`：本地工具审计
+- `data/diagnostics/`：不含密钥和私人正文的诊断报告
 - `data/audio/`：显式录制或生成的音频
 - `data/inbox/`：个人微信收到并解密的附件（超过 30 天自动清理）
 - `backups/`：本地 ZIP 备份
+- `exports/`：手动导出的个人数据 ZIP（含聊天等隐私内容，请妥善保管）
 - `workspace/`：经批准新建的文件
 
 以上目录均不会提交到 Git。旧版仓库中的 `memory.json` 已迁移到 `data/memory.json`，内容保留但从版本控制删除。
@@ -217,4 +234,6 @@ proactive_manager.py     主动消息节流与安静时段
 assistant_guardian.py    后台守护、自动重启和每日备份
 assistant_dashboard.py   图形化本地控制台
 secret_store.py          Windows DPAPI 密钥库
+diagnostics_manager.py   隐私安全的运行诊断
+export_manager.py        不含密钥的个人数据导出
 ```

@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import threading
 from pathlib import Path
 
@@ -10,6 +11,8 @@ from action_manager import ActionManager
 from backup_manager import create_backup_with_retention
 from channel_manager import WeComWebhookChannel
 from conversation_manager import ConversationManager
+from diagnostics_manager import create_diagnostic_report
+from export_manager import export_personal_data
 from knowledge_manager import KnowledgeManager
 from memory_manager import (
     delete_memory,
@@ -26,7 +29,7 @@ from usage_manager import USAGE_MANAGER
 from voice_manager import record_audio, synthesize_speech, transcribe_audio
 from web_search_manager import search_web
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 PROJECT_DIR = Path(__file__).resolve().parent
 PERSONA_FILE = PROJECT_DIR / "persona" / "Mr_L_only.txt"
 
@@ -456,6 +459,8 @@ def print_help():
   /mode              查看模型档位
   /mode <档位>       切换 fast、balanced 或 deep
   /backup            备份长期记忆、会话和任务
+  /export            导出可迁移的个人数据（不含密钥）
+  /diagnostics       生成不含私密正文的诊断报告
   /web <问题>        联网搜索并返回来源链接
   /pending           查看等待确认的文件动作
   /approve <编号>    确认并执行一个文件动作
@@ -812,6 +817,20 @@ def run_chat():
                 print(f"宝宝：本地备份完成：{backup_file}")
             except (OSError, ValueError) as error:
                 print(f"备份失败：{error}")
+            continue
+        if user_input == "/export":
+            try:
+                export_file = export_personal_data()
+                print(f"宝宝：个人数据已导出：{export_file}")
+            except (OSError, ValueError, sqlite3.Error) as error:
+                print(f"导出失败：{error}")
+            continue
+        if user_input == "/diagnostics":
+            try:
+                report_file = create_diagnostic_report()
+                print(f"宝宝：隐私安全诊断报告已生成：{report_file}")
+            except (OSError, ValueError, sqlite3.Error) as error:
+                print(f"诊断失败：{error}")
             continue
         if user_input.startswith("/web "):
             try:

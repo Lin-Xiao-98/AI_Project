@@ -59,6 +59,16 @@ class KnowledgeManagerTests(unittest.TestCase):
         self.assertIn("项目结论", self.manager.search("项目结论")[0]["content"])
         self.assertIn("完成联网功能", self.manager.search("完成联网功能")[0]["content"])
 
+    def test_full_text_search_prioritises_more_relevant_chunk(self):
+        weak = self.root / "weak.txt"
+        strong = self.root / "strong.txt"
+        weak.write_text("苹果手机偶尔被提到。这里还有很多无关内容。", encoding="utf-8")
+        strong.write_text("苹果手机选购：苹果手机型号、苹果手机价格。", encoding="utf-8")
+        self.manager.add_document(weak)
+        self.manager.add_document(strong)
+        results = self.manager.search("苹果手机")
+        self.assertEqual(results[0]["title"], "strong")
+
     def test_project_filter_separates_context(self):
         one = self.root / "one.txt"
         two = self.root / "two.txt"

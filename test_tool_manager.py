@@ -36,6 +36,17 @@ class ToolManagerTests(unittest.TestCase):
         self.assertIn("local_time", result)
         self.assertTrue(self.audit_file.exists())
 
+    def test_audit_redacts_private_text_and_rotates(self):
+        with patch.object(tool_manager, "MAX_AUDIT_BYTES", 1):
+            self.audit_file.write_text("old", encoding="utf-8")
+            tool_manager.execute_tool(
+                "add_task", {"title": "不能写进日志的任务"}, self.task_manager
+            )
+        text = self.audit_file.read_text(encoding="utf-8")
+        self.assertNotIn("不能写进日志", text)
+        self.assertIn("redacted", text)
+        self.assertTrue(self.audit_file.with_name("tool_audit.jsonl.1").exists())
+
     def test_expected_tools_are_exposed_to_model(self):
         names = {
             item["function"]["name"]

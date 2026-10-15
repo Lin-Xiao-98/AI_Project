@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -7,6 +8,8 @@ from conversation_manager import PROJECT_DIR
 AUDIT_FILE = PROJECT_DIR / "data" / "tool_audit.jsonl"
 MAX_FILE_BYTES = 100_000
 MAX_LISTED_FILES = 200
+MAX_AUDIT_BYTES = 5 * 1024 * 1024
+AUDIT_BACKUPS = 3
 BLOCKED_PARTS = {
     ".git",
     ".env",
@@ -265,12 +268,33 @@ def _read_project_text_file(path):
     }
 
 
+def _safe_audit_arguments(arguments):
+    private_keys = {"content", "query", "title"}
+    return {
+        key: f"<redacted:{len(str(value))} chars>" if key in private_keys else value
+        for key, value in arguments.items()
+    }
+
+
+def _rotate_audit_if_needed():
+    if not AUDIT_FILE.exists() or AUDIT_FILE.stat().st_size < MAX_AUDIT_BYTES:
+        return
+    oldest = AUDIT_FILE.with_name(f"{AUDIT_FILE.name}.{AUDIT_BACKUPS}")
+    oldest.unlink(missing_ok=True)
+    for index in range(AUDIT_BACKUPS - 1, 0, -1):
+        source = AUDIT_FILE.with_name(f"{AUDIT_FILE.name}.{index}")
+        if source.exists():
+            os.replace(source, AUDIT_FILE.with_name(f"{AUDIT_FILE.name}.{index + 1}"))
+    os.replace(AUDIT_FILE, AUDIT_FILE.with_name(f"{AUDIT_FILE.name}.1"))
+
+
 def _write_audit(name, arguments, success, error=None):
     AUDIT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _rotate_audit_if_needed()
     record = {
         "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
         "tool": name,
-        "arguments": arguments,
+        "arguments": _safe_audit_arguments(arguments),
         "success": success,
     }
     if error:

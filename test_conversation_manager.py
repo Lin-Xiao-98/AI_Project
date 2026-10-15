@@ -67,6 +67,14 @@ class ConversationManagerTests(unittest.TestCase):
         self.assertEqual(first, repeated)
         self.assertNotEqual(first, second)
 
+    def test_new_scoped_session_preserves_old_and_becomes_current(self):
+        first = self.manager.get_or_create_scoped_session("weixin", "user-a")
+        second = self.manager.start_new_scoped_session("weixin", "user-a")
+        self.assertNotEqual(first, second)
+        self.assertEqual(
+            second, self.manager.get_or_create_scoped_session("weixin", "user-a")
+        )
+
     def test_channel_message_dedup_can_release_failed_processing(self):
         self.assertTrue(self.manager.claim_channel_message("wecom", "msg-1"))
         self.assertFalse(self.manager.claim_channel_message("wecom", "msg-1"))
