@@ -1,6 +1,8 @@
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from docx import Document
 from openpyxl import Workbook
@@ -68,6 +70,14 @@ class KnowledgeManagerTests(unittest.TestCase):
         self.manager.add_document(strong)
         results = self.manager.search("苹果手机")
         self.assertEqual(results[0]["title"], "strong")
+
+    def test_rejects_office_archive_with_excessive_expanded_size(self):
+        source = Path(self.temp_directory.name) / "oversized.docx"
+        with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("word/document.xml", "x" * 1024)
+        with patch("knowledge_manager.MAX_EXPANDED_DOCUMENT_BYTES", 100):
+            with self.assertRaisesRegex(ValueError, "解压后"):
+                self.manager.add_document(source)
 
     def test_project_filter_separates_context(self):
         one = self.root / "one.txt"

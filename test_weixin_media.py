@@ -1,11 +1,14 @@
 import base64
 import os
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
 
-from weixin_media import _decode_key, _decrypt, _safe_url
+from weixin_media import _decode_key, _decrypt, _safe_url, download_media_items
 
 
 class WeixinMediaTests(unittest.TestCase):
@@ -27,6 +30,23 @@ class WeixinMediaTests(unittest.TestCase):
         self.assertEqual(_safe_url(valid), valid)
         with self.assertRaises(ValueError):
             _safe_url("https://example.com/media")
+
+    def test_download_limits_attachment_count(self):
+        items = [
+            {
+                "type": 2,
+                "image_item": {"media": {"full_url": "https://weixin.qq.com/a"}},
+            }
+            for _ in range(20)
+        ]
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch("weixin_media._download", return_value=b"image"),
+        ):
+            attachments = download_media_items(
+                {"message_id": "many", "item_list": items}, Path(temporary)
+            )
+        self.assertEqual(len(attachments), 8)
 
 
 if __name__ == "__main__":

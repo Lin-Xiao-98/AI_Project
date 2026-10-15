@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 
 from usage_manager import USAGE_MANAGER
 
 WEB_SEARCH_MODEL = os.getenv("WEB_SEARCH_MODEL", "gpt-4.1-mini")
+WEB_SEARCH_CACHE_SECONDS = max(int(os.getenv("WEB_SEARCH_CACHE_SECONDS", "300")), 0)
+_CACHE: dict[str, tuple[float, str]] = {}
+_CACHE_LOCK = threading.Lock()
 
 
 def search_web(client, query: str, max_completion_tokens: int = 900) -> str:
@@ -15,6 +20,13 @@ def search_web(client, query: str, max_completion_tokens: int = 900) -> str:
         raise ValueError("联网搜索内容不能为空。")
     if len(query) > 1000:
         raise ValueError("单次联网搜索内容不能超过 1000 个字符。")
+    normalised_query = " ".join(query.casefold().split())
+    cache_key = f"{WEB_SEARCH_MODEL}:{max_completion_tokens}:{normalised_query}"
+    if WEB_SEARCH_CACHE_SECONDS:
+        with _CACHE_LOCK:
+            cached = _CACHE.get(cache_key)
+        if cached and time.monotonic() - cached[0] <= WEB_SEARCH_CACHE_SECONDS:
+            return cached[1]
     USAGE_MANAGER.ensure_available()
     response = client.responses.create(
         model=WEB_SEARCH_MODEL,
@@ -50,4 +62,10 @@ def search_web(client, query: str, max_completion_tokens: int = 900) -> str:
         content += "\n\n来源：\n" + "\n".join(
             f"- [{title}]({url})" for title, url in sources[:6]
         )
+    if WEB_SEARCH_CACHE_SECONDS:
+        with _CACHE_LOCK:
+            _CACHE[cache_key] = (time.monotonic(), content)
+            if len(_CACHE) > 100:
+                oldest = min(_CACHE, key=lambda key: _CACHE[key][0])
+                _CACHE.pop(oldest, None)
     return content

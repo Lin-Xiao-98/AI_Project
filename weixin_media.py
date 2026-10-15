@@ -19,6 +19,8 @@ from conversation_manager import PROJECT_DIR
 CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
 INBOX_DIR = PROJECT_DIR / "data" / "inbox"
 MAX_MEDIA_BYTES = 25 * 1024 * 1024
+MAX_MESSAGE_MEDIA_BYTES = 50 * 1024 * 1024
+MAX_ATTACHMENTS = 8
 
 
 @dataclass(frozen=True)
@@ -114,12 +116,16 @@ def download_media_items(message: dict, inbox=INBOX_DIR) -> list[MediaAttachment
     inbox.mkdir(parents=True, exist_ok=True)
     message_id = re.sub(r"[^A-Za-z0-9_-]", "", str(message.get("message_id") or "msg"))[:64]
     attachments = []
-    for index, item in enumerate(message.get("item_list") or []):
+    total_downloaded = 0
+    for index, item in enumerate((message.get("item_list") or [])[:MAX_ATTACHMENTS]):
         details = _item_details(item)
         if details is None:
             continue
         kind, url, key, filename = details
         ciphertext = _download(url)
+        if total_downloaded + len(ciphertext) > MAX_MESSAGE_MEDIA_BYTES:
+            break
+        total_downloaded += len(ciphertext)
         plaintext = _decrypt(ciphertext, key) if key else ciphertext
         destination = inbox / f"{message_id}_{index}_{filename}"
         descriptor, temporary = tempfile.mkstemp(prefix="weixin_", suffix=".tmp", dir=inbox)

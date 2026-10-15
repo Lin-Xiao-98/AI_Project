@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +14,8 @@ from conversation_manager import DEFAULT_DATABASE
 ALLOWED_SUFFIXES = {".csv", ".docx", ".md", ".pdf", ".txt", ".xlsx"}
 MAX_DOCUMENT_BYTES = 20_000_000
 MAX_EXTRACTED_CHARS = 2_000_000
+MAX_EXPANDED_DOCUMENT_BYTES = 100_000_000
+MAX_ARCHIVE_MEMBERS = 10_000
 CHUNK_SIZE = 1600
 CHUNK_OVERLAP = 200
 
@@ -117,6 +120,19 @@ class KnowledgeManager:
         return source
 
     @staticmethod
+    def _validate_office_archive(source):
+        try:
+            with zipfile.ZipFile(source) as archive:
+                members = archive.infolist()
+                expanded = sum(member.file_size for member in members)
+        except zipfile.BadZipFile as error:
+            raise ValueError("Office 资料压缩结构损坏。") from error
+        if len(members) > MAX_ARCHIVE_MEMBERS:
+            raise ValueError("Office 资料内部文件数量异常，已拒绝导入。")
+        if expanded > MAX_EXPANDED_DOCUMENT_BYTES:
+            raise ValueError("Office 资料解压后超过 100 MB，已拒绝导入。")
+
+    @staticmethod
     def _extract_text(source):
         suffix = source.suffix.lower()
         if suffix in {".md", ".txt", ".csv"}:
@@ -132,6 +148,7 @@ class KnowledgeManager:
                 raise ValueError("暂不支持加密 PDF。")
             content = "\n\n".join(page.extract_text() or "" for page in reader.pages)
         elif suffix == ".docx":
+            KnowledgeManager._validate_office_archive(source)
             from docx import Document
 
             document = Document(source)
@@ -141,6 +158,7 @@ class KnowledgeManager:
                     lines.append("\t".join(cell.text for cell in row.cells))
             content = "\n".join(lines)
         elif suffix == ".xlsx":
+            KnowledgeManager._validate_office_archive(source)
             from openpyxl import load_workbook
 
             workbook = load_workbook(source, read_only=True, data_only=True)
