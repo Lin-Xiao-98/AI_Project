@@ -29,6 +29,8 @@ DEFAULT_TTS_INSTRUCTIONS = (
 QWEN_TTS_PYTHON = Path("D:/AI_Runtime/Qwen3-TTS/venv/Scripts/python.exe")
 QWEN_TTS_RUNNER = PROJECT_DIR / "qwen_tts_runner.py"
 QWEN_TTS_TIMEOUT_SECONDS = 600
+FFMPEG_PATH = Path("D:/AI_Tools/FFmpeg/bin/ffmpeg.exe")
+VOICE_CONVERT_TIMEOUT_SECONDS = 120
 
 
 def _is_openai_client(client) -> bool:
@@ -88,6 +90,49 @@ def validate_audio_file(path: str | Path) -> Path:
     if size > MAX_AUDIO_BYTES:
         raise ValueError("音频文件不能超过 25 MB。")
     return audio_path
+
+
+def convert_voice_for_transcription(path: str | Path) -> Path:
+    """把微信等通道下载的未知音频容器转换为标准单声道 WAV。"""
+    source = Path(path).expanduser().resolve()
+    if not source.is_file() or source.stat().st_size == 0:
+        raise ValueError("找不到可转写的语音文件。")
+    if source.stat().st_size > MAX_AUDIO_BYTES:
+        raise ValueError("音频文件不能超过 25 MB。")
+    if not FFMPEG_PATH.is_file():
+        raise RuntimeError("D 盘 FFmpeg 尚未安装完整，无法转换微信语音。")
+    output_path = _timestamped_path("transcription_input", ".wav")
+    result = subprocess.run(
+        [
+            str(FFMPEG_PATH),
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(source),
+            "-t",
+            "300",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-y",
+            str(output_path),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=VOICE_CONVERT_TIMEOUT_SECONDS,
+        check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if result.returncode != 0 or not output_path.is_file():
+        output_path.unlink(missing_ok=True)
+        detail = (result.stderr or "无法识别音频编码").strip()[-500:]
+        raise RuntimeError(f"微信语音转码失败：{detail}")
+    return output_path
 
 
 def transcribe_audio(client, path: str | Path, model: str = "gpt-4o-mini-transcribe") -> str:

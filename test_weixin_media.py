@@ -8,7 +8,13 @@ from unittest.mock import patch
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
 
-from weixin_media import _decode_key, _decrypt, _safe_url, download_media_items
+from weixin_media import (
+    _decode_key,
+    _decrypt,
+    _item_details,
+    _safe_url,
+    download_media_items,
+)
 
 
 class WeixinMediaTests(unittest.TestCase):
@@ -47,6 +53,22 @@ class WeixinMediaTests(unittest.TestCase):
                 {"message_id": "many", "item_list": items}, Path(temporary)
             )
         self.assertEqual(len(attachments), 8)
+
+    def test_voice_filename_reflects_codec_hint(self):
+        key = base64.b64encode(b"1234567890abcdef").decode()
+        details = _item_details(
+            {
+                "type": 3,
+                "voice_item": {
+                    "encode_type": 7,
+                    "media": {
+                        "full_url": "https://weixin.qq.com/voice",
+                        "aes_key": key,
+                    },
+                },
+            }
+        )
+        self.assertEqual(details[-1], "voice.mp3")
 
 
 if __name__ == "__main__":

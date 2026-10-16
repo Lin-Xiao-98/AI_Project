@@ -1,16 +1,22 @@
 import base64
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from weixin_api import WeixinApi, WeixinApiError, _safe_base_url
 from weixin_bot import (
+    SerialMessageWorker,
     WeixinAccount,
     extract_text,
     load_account,
     save_account,
+    transcribe_voice_placeholders,
     voice_intent,
 )
+from weixin_media import MediaAttachment
 from weixin_upload import UploadedMedia
 
 
@@ -95,6 +101,48 @@ class WeixinApiTests(unittest.TestCase):
 
 
 class WeixinBotTests(unittest.TestCase):
+    def test_missing_weixin_voice_text_is_transcribed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "voice.dat"
+            converted = Path(folder) / "voice.wav"
+            source.write_bytes(b"voice")
+            converted.write_bytes(b"RIFF")
+            service = SimpleNamespace(client=object())
+            with (
+                patch("weixin_bot.convert_voice_for_transcription", return_value=converted),
+                patch("weixin_bot.transcribe_audio", return_value="帮我查看今天的待办"),
+            ):
+                content = transcribe_voice_placeholders(
+                    service,
+                    "[语音]",
+                    [MediaAttachment("voice", source)],
+                )
+            self.assertEqual(content, "帮我查看今天的待办")
+            self.assertFalse(converted.exists())
+
+    def test_serial_worker_keeps_order_and_bounds_backlog(self):
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        handled = []
+
+        def handler(message):
+            handled.append(message)
+            if message == "first":
+                started.set()
+                release.wait(timeout=2)
+            if message == "second":
+                finished.set()
+
+        worker = SerialMessageWorker(handler, max_pending=1)
+        self.assertTrue(worker.submit("first"))
+        self.assertTrue(started.wait(timeout=1))
+        self.assertTrue(worker.submit("second"))
+        self.assertFalse(worker.submit("overflow"))
+        release.set()
+        self.assertTrue(finished.wait(timeout=2))
+        self.assertEqual(handled, ["first", "second"])
+
     def test_extracts_text_and_voice_transcript(self):
         message = {
             "item_list": [

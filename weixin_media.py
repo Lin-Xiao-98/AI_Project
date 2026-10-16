@@ -21,6 +21,14 @@ INBOX_DIR = PROJECT_DIR / "data" / "inbox"
 MAX_MEDIA_BYTES = 25 * 1024 * 1024
 MAX_MESSAGE_MEDIA_BYTES = 50 * 1024 * 1024
 MAX_ATTACHMENTS = 8
+VOICE_SUFFIXES = {
+    1: ".pcm",
+    4: ".spx",
+    5: ".amr",
+    6: ".silk",
+    7: ".mp3",
+    8: ".spx",
+}
 
 
 @dataclass(frozen=True)
@@ -107,7 +115,11 @@ def _item_details(item: dict):
     key = _decode_key(media.get("aes_key"), detail.get("aeskey") if kind == "image" else None)
     if key is None and kind != "image":
         return None
-    filename = detail.get("file_name") if kind == "file" else fallback
+    if kind == "voice":
+        suffix = VOICE_SUFFIXES.get(detail.get("encode_type"), ".dat")
+        filename = f"voice{suffix}"
+    else:
+        filename = detail.get("file_name") if kind == "file" else fallback
     return kind, url, key, _safe_filename(filename, fallback)
 
 

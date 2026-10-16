@@ -62,6 +62,27 @@ class VoiceManagerTests(unittest.TestCase):
         self.assertEqual(voice_manager.transcribe_audio(client, path), "测试转写文本")
         self.assertEqual(transcriptions.request["model"], "gpt-4o-mini-transcribe")
 
+    def test_convert_voice_for_transcription_uses_fixed_ffmpeg(self):
+        source = self.temp_path / "voice.dat"
+        source.write_bytes(b"encrypted voice already decoded")
+        fake_ffmpeg = self.temp_path / "ffmpeg.exe"
+        fake_ffmpeg.write_bytes(b"exe")
+
+        def fake_run(command, **_kwargs):
+            Path(command[-1]).write_bytes(b"RIFFfake")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with (
+            patch.object(voice_manager, "AUDIO_DIR", self.temp_path),
+            patch.object(voice_manager, "FFMPEG_PATH", fake_ffmpeg),
+            patch.object(voice_manager.subprocess, "run", side_effect=fake_run) as run,
+        ):
+            converted = voice_manager.convert_voice_for_transcription(source)
+        self.assertEqual(converted.suffix, ".wav")
+        self.assertEqual(converted.read_bytes(), b"RIFFfake")
+        self.assertEqual(run.call_args.args[0][0], str(fake_ffmpeg))
+        self.assertIn("300", run.call_args.args[0])
+
     def test_synthesize_speech_does_not_play_audio(self):
         streaming = FakeStreamingResponse()
         client = SimpleNamespace(
