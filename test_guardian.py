@@ -26,6 +26,23 @@ class GuardianTests(unittest.TestCase):
                 status = guardian_control.read_status()
         self.assertEqual(status["state"], "stopped")
 
+    def test_running_status_checks_child_process(self):
+        with (
+            tempfile.TemporaryDirectory() as folder,
+            patch.object(guardian_control, "STATUS_FILE", Path(folder) / "status.json"),
+            patch.object(
+                guardian_control,
+                "_pid_running",
+                side_effect=lambda pid: pid == 100,
+            ),
+        ):
+            guardian_control.STATUS_FILE.write_text(
+                '{"state":"running","guardian_pid":100,"child_pid":200}',
+                encoding="utf-8",
+            )
+            status = guardian_control.read_status()
+            self.assertEqual(status["state"], "restarting")
+
     def test_inbox_cleanup_only_removes_expired_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             inbox = Path(temporary)

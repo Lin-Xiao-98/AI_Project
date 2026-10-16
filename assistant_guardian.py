@@ -85,6 +85,15 @@ def _run_maintenance(logger) -> None:
         )
 
 
+def _weixin_instance_running() -> bool:
+    """检查是否已有手动或其他守护进程持有微信单实例锁。"""
+    try:
+        with SingleInstance("weixin_bot"):
+            return False
+    except RuntimeError:
+        return True
+
+
 def run():
     logger = _logger()
     stopping = False
@@ -112,6 +121,15 @@ def run():
                         logger.info("自动备份完成：%s", backup.name)
                     except Exception:
                         logger.exception("自动备份失败")
+
+                if _weixin_instance_running():
+                    _write_status(
+                        "external_running",
+                        detail="检测到另一个个人微信助手实例；将等待它退出后接管。",
+                    )
+                    logger.info("检测到已有个人微信实例，60 秒后重新检查")
+                    time.sleep(60)
+                    continue
 
                 child_log = (LOG_DIR / "weixin_bot.log").open("a", encoding="utf-8")
                 try:

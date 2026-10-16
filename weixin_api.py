@@ -49,6 +49,19 @@ def _base_headers() -> dict[str, str]:
     }
 
 
+def _base_info() -> dict[str, str]:
+    return {"channel_version": CLIENT_VERSION, "bot_agent": "AIProject/1.3"}
+
+
+def _ensure_success(result: dict[str, Any], operation: str) -> dict[str, Any]:
+    for field in ("ret", "errcode"):
+        value = result.get(field)
+        if value not in (None, 0):
+            message = str(result.get("errmsg") or "未知错误")[:300]
+            raise WeixinApiError(f"微信{operation}失败：{field}={value} {message}")
+    return result
+
+
 class WeixinApi:
     def __init__(
         self,
@@ -125,18 +138,17 @@ class WeixinApi:
             {
                 "get_updates_buf": updates_buf,
                 "base_info": {
-                    "channel_version": CLIENT_VERSION,
-                    "bot_agent": "AIProject/1.0",
+                    **_base_info(),
                 },
             },
             timeout=self.long_poll_timeout,
             authenticated=True,
         )
 
-    def send_text(self, to_user_id: str, text: str, context_token: str):
+    def _send_item(self, to_user_id: str, item: dict[str, Any], context_token: str):
         if not context_token:
             raise WeixinApiError("微信回复缺少 context_token，已阻止发送。")
-        return self._request_json(
+        result = self._request_json(
             "POST",
             "ilink/bot/sendmessage",
             {
@@ -146,10 +158,101 @@ class WeixinApi:
                     "client_id": f"aiproject-{secrets.token_hex(12)}",
                     "message_type": 2,
                     "message_state": 2,
-                    "item_list": [{"type": 1, "text_item": {"text": text}}],
+                    "item_list": [item],
                     "context_token": context_token,
-                }
+                },
+                "base_info": _base_info(),
             },
             timeout=self.timeout,
             authenticated=True,
+        )
+        return _ensure_success(result, "消息发送")
+
+    def send_text(self, to_user_id: str, text: str, context_token: str):
+        return self._send_item(
+            to_user_id,
+            {"type": 1, "text_item": {"text": text}},
+            context_token,
+        )
+
+    def get_upload_url(
+        self,
+        *,
+        file_key: str,
+        media_type: int,
+        to_user_id: str,
+        raw_size: int,
+        raw_md5: str,
+        cipher_size: int,
+        aes_key_hex: str,
+    ):
+        result = self._request_json(
+            "POST",
+            "ilink/bot/getuploadurl",
+            {
+                "filekey": file_key,
+                "media_type": media_type,
+                "to_user_id": to_user_id,
+                "rawsize": raw_size,
+                "rawfilemd5": raw_md5,
+                "filesize": cipher_size,
+                "no_need_thumb": True,
+                "aeskey": aes_key_hex,
+                "base_info": _base_info(),
+            },
+            timeout=self.timeout,
+            authenticated=True,
+        )
+        return _ensure_success(result, "媒体上传准备")
+
+    @staticmethod
+    def _media_reference(uploaded, include_encrypt_type: bool = True):
+        media = {
+            "encrypt_query_param": uploaded.download_parameter,
+            "aes_key": base64.b64encode(
+                uploaded.aes_key_hex.encode("ascii")
+            ).decode("ascii"),
+        }
+        if include_encrypt_type:
+            media["encrypt_type"] = 1
+        return media
+
+    def send_file(self, to_user_id: str, uploaded, filename: str, context_token: str):
+        return self._send_item(
+            to_user_id,
+            {
+                "type": 4,
+                "file_item": {
+                    "media": self._media_reference(uploaded),
+                    "file_name": str(filename)[:120],
+                    "len": str(uploaded.plain_size),
+                },
+            },
+            context_token,
+        )
+
+    def send_voice_experimental(
+        self,
+        to_user_id: str,
+        uploaded,
+        context_token: str,
+        *,
+        playtime_ms: int,
+        sample_rate: int = 24000,
+        encode_type: int = 7,
+    ):
+        """实验性原生语音气泡；iLink 可能成功接收但微信客户端不展示。"""
+        return self._send_item(
+            to_user_id,
+            {
+                "type": 3,
+                "voice_item": {
+                    "media": self._media_reference(uploaded, False),
+                    "encode_type": encode_type,
+                    "playtime": max(1, int(playtime_ms)),
+                    "bits_per_sample": 16,
+                    "sample_rate": sample_rate,
+                },
+            },
+            context_token,
         )

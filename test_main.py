@@ -24,6 +24,19 @@ class MainSafetyTests(unittest.TestCase):
         self.assertIn("read_project_text_file", allowed)
         self.assertTrue(main.WRITE_TOOL_NAMES.isdisjoint(allowed))
 
+    def test_computer_tools_require_matching_explicit_intent(self):
+        self.assertNotIn("capture_screen", main.allowed_model_tools("你好"))
+        self.assertIn("capture_screen", main.allowed_model_tools("截个屏看看"))
+        self.assertIn(
+            "analyze_current_screen", main.allowed_model_tools("看看屏幕上有什么")
+        )
+        self.assertIn("get_system_status", main.allowed_model_tools("电脑现在卡不卡"))
+        self.assertIn("find_files", main.allowed_model_tools("帮我找文件"))
+        self.assertIn("open_application", main.allowed_model_tools("打开 Premiere"))
+        self.assertIn(
+            "prepare_file_move", main.allowed_model_tools("把这个文件移动到素材目录")
+        )
+
     def test_model_failure_uses_configured_fallback(self):
         calls = []
 
@@ -37,7 +50,11 @@ class MainSafetyTests(unittest.TestCase):
         client = SimpleNamespace(
             chat=SimpleNamespace(completions=FakeCompletions())
         )
-        with patch.object(main, "FALLBACK_MODEL", "gpt-6-luna"):
+        with (
+            patch.object(main, "FALLBACK_MODEL", "gpt-6-luna"),
+            patch.object(main.USAGE_MANAGER, "ensure_available"),
+            patch.object(main.USAGE_MANAGER, "record_response"),
+        ):
             response = main.create_chat_completion_with_fallback(
                 client,
                 {"model": "gpt-6-sol", "messages": []},

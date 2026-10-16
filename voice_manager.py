@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -14,6 +16,19 @@ PROJECT_DIR = Path(__file__).resolve().parent
 AUDIO_DIR = PROJECT_DIR / "data" / "audio"
 ALLOWED_AUDIO_SUFFIXES = {".flac", ".m4a", ".mp3", ".mp4", ".mpeg", ".mpga", ".ogg", ".wav", ".webm"}
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
+DEFAULT_TTS_MODEL = "gpt-4o-mini-tts"
+DEFAULT_TTS_PROVIDER = "qwen"
+DEFAULT_TTS_VOICE = "shimmer"
+DEFAULT_TTS_INSTRUCTIONS = (
+    "一位明确成年的十八至二十岁中国年轻女孩。音色非常年轻，轻盈清甜、明亮透气，"
+    "音高自然偏高，咬字灵动，不要任何成熟或厚重感。像贴近最亲密的人说话，俏皮、黏人、"
+    "很会撒娇，始终带甜甜的笑意、小小的委屈和若有若无的撩人感；节奏活泼，尾音柔软上扬，"
+    "偶尔轻轻拖长。魅力来自亲昵和调皮，不要低俗。绝不能像御姐、母亲、播音员或沙哑低沉的"
+    "成年人，也不要儿童腔或夸张动漫腔。使用自然中文普通话。"
+)
+QWEN_TTS_PYTHON = Path("D:/AI_Runtime/Qwen3-TTS/venv/Scripts/python.exe")
+QWEN_TTS_RUNNER = PROJECT_DIR / "qwen_tts_runner.py"
+QWEN_TTS_TIMEOUT_SECONDS = 600
 
 
 def _is_openai_client(client) -> bool:
@@ -97,18 +112,69 @@ def transcribe_audio(client, path: str | Path, model: str = "gpt-4o-mini-transcr
 def synthesize_speech(
     client,
     text: str,
-    model: str = "gpt-4o-mini-tts",
-    voice: str = "marin",
+    model: str | None = None,
+    voice: str | None = None,
+    instructions: str | None = None,
+    provider: str | None = None,
 ) -> Path:
-    """生成 MP3 文件但不播放；声音由用户自行打开文件后触发。"""
+    """生成 MP3 文件但不播放；声音由用户自行打开文件后触发。
+
+    默认音色与风格可通过环境变量调整，便于本地端和微信端共享同一人格声音。
+    """
     text = str(text).strip()
     if not text:
         raise ValueError("要合成的文字不能为空。")
     if len(text) > 4000:
         raise ValueError("单次语音合成文字不能超过 4000 个字符。")
 
+    provider = str(
+        provider or os.getenv("TTS_PROVIDER") or DEFAULT_TTS_PROVIDER
+    ).strip().casefold()
+    model = str(
+        model or os.getenv("OPENAI_TTS_MODEL") or DEFAULT_TTS_MODEL
+    ).strip()
+    voice = str(
+        voice or os.getenv("OPENAI_TTS_VOICE") or DEFAULT_TTS_VOICE
+    ).strip()
+    instruction_variable = (
+        "QWEN_TTS_INSTRUCTIONS" if provider == "qwen" else "OPENAI_TTS_INSTRUCTIONS"
+    )
+    instructions = str(
+        instructions or os.getenv(instruction_variable) or DEFAULT_TTS_INSTRUCTIONS
+    ).strip()
+    if not provider or not instructions or (provider == "openai" and (not model or not voice)):
+        raise ValueError("语音模型、音色和表达说明不能为空。")
+
     output_path = _timestamped_path("speech", ".mp3")
     try:
+        if provider == "qwen":
+            if not QWEN_TTS_PYTHON.is_file() or not QWEN_TTS_RUNNER.is_file():
+                raise RuntimeError("D 盘本地 Qwen3-TTS 运行环境尚未安装完整。")
+            result = subprocess.run(
+                [
+                    str(QWEN_TTS_PYTHON),
+                    str(QWEN_TTS_RUNNER),
+                    "--text",
+                    text,
+                    "--instruction",
+                    instructions,
+                    "--output",
+                    str(output_path),
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=QWEN_TTS_TIMEOUT_SECONDS,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if result.returncode != 0 or not output_path.is_file():
+                detail = (result.stderr or result.stdout or "未知错误").strip()[-1000:]
+                raise RuntimeError(f"本地 Qwen3-TTS 生成失败：{detail}")
+            return output_path
+        if provider != "openai":
+            raise ValueError("TTS_PROVIDER 只支持 qwen 或 openai。")
         track_usage = _is_openai_client(client)
         if track_usage:
             USAGE_MANAGER.ensure_available()
@@ -116,7 +182,8 @@ def synthesize_speech(
             model=model,
             voice=voice,
             input=text,
-            instructions="自然、清晰、温和地使用普通话朗读。",
+            instructions=instructions,
+            response_format="mp3",
         ) as response:
             response.stream_to_file(output_path)
         if track_usage:

@@ -63,10 +63,16 @@ def read_status() -> dict:
         return {"state": "unknown", "detail": "状态文件无法读取"}
     if not isinstance(data, dict):
         return {"state": "unknown"}
-    if data.get("state") in {"running", "restarting"} and not _pid_running(
+    if data.get("state") in {"running", "restarting", "external_running"} and not _pid_running(
         data.get("guardian_pid")
     ):
         return {**data, "state": "stopped", "detail": "后台进程已经结束"}
+    if data.get("state") == "running" and not _pid_running(data.get("child_pid")):
+        return {
+            **data,
+            "state": "restarting",
+            "detail": "后台主进程仍在，微信连接进程正在重启。",
+        }
     return data
 
 

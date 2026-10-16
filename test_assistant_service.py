@@ -1,6 +1,8 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from action_manager import ActionManager
 from assistant_service import AssistantService
@@ -46,6 +48,13 @@ class AssistantServiceCommandTests(unittest.TestCase):
             "待办已删除。",
         )
 
+    def test_natural_language_task_is_handled_without_model(self):
+        reply = self.service.respond(
+            "weixin", "me", "帮我添加一个待办：整理今天的素材"
+        )
+        self.assertIn("整理今天的素材", reply)
+        self.assertEqual(self.service.tasks.list_tasks()[0]["title"], "整理今天的素材")
+
     def test_model_mode_command_is_persistent(self):
         reply = self.service._remote_command("/mode balanced", "weixin", "me")
         self.assertIn("balanced", reply)
@@ -67,6 +76,58 @@ class AssistantServiceCommandTests(unittest.TestCase):
         )
         self.assertIn("guide（手机）", reply)
         self.assertIn("维修预约", reply)
+
+    def test_remote_approval_accepts_hex_action_id(self):
+        action = self.service.actions.prepare_file_creation(
+            "approved.txt", "微信审批测试"
+        )
+
+        reply = self.service._remote_command(
+            f"/approve {action['action_id']}", "weixin", "me"
+        )
+
+        self.assertEqual(reply, "已批准并创建：approved.txt")
+        self.assertEqual(
+            (self.service.actions.workspace_directory / "approved.txt").read_text(
+                encoding="utf-8"
+            ),
+            "微信审批测试",
+        )
+
+    def test_remote_rejection_accepts_hex_action_id(self):
+        action = self.service.actions.prepare_file_creation(
+            "rejected.txt", "不会被创建"
+        )
+
+        reply = self.service._remote_command(
+            f"/reject {action['action_id']}", "weixin", "me"
+        )
+
+        self.assertEqual(reply, "已拒绝。")
+        self.assertFalse(
+            (self.service.actions.workspace_directory / "rejected.txt").exists()
+        )
+
+    def test_video_attachment_can_generate_local_shot_report(self):
+        root = Path(self.temporary.name)
+        video = root / "clip.mp4"
+        video.write_bytes(b"video")
+        report_dir = root / "report"
+        frames_dir = report_dir / "frames"
+        frames_dir.mkdir(parents=True)
+        report = report_dir / "拉片报告.md"
+        report.write_text("# 基础拉片\n00:00:00", encoding="utf-8")
+        (frames_dir / "frame_001.jpg").write_bytes(b"jpeg")
+        attachment = SimpleNamespace(kind="video", path=video)
+        with patch(
+            "assistant_service.create_shot_report",
+            return_value={"report_path": str(report), "frame_count": 1},
+        ):
+            content = self.service._content_with_attachments(
+                "帮我分析这个视频并拉片", [attachment]
+            )
+        self.assertIn("基础拉片", content[0]["text"])
+        self.assertEqual(content[1]["type"], "image_url")
 
 
 if __name__ == "__main__":

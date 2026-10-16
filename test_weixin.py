@@ -1,9 +1,17 @@
+import base64
 import tempfile
 import unittest
 from pathlib import Path
 
 from weixin_api import WeixinApi, WeixinApiError, _safe_base_url
-from weixin_bot import WeixinAccount, extract_text, load_account, save_account
+from weixin_bot import (
+    WeixinAccount,
+    extract_text,
+    load_account,
+    save_account,
+    voice_intent,
+)
+from weixin_upload import UploadedMedia
 
 
 class WeixinApiTests(unittest.TestCase):
@@ -35,10 +43,55 @@ class WeixinApiTests(unittest.TestCase):
         self.assertEqual(message["to_user_id"], "user-1")
         self.assertEqual(message["context_token"], "ctx-1")
         self.assertEqual(message["item_list"][0]["text_item"]["text"], "你好")
+        self.assertEqual(captured["payload"]["base_info"]["bot_agent"], "AIProject/1.3")
 
     def test_send_text_requires_context_token(self):
         with self.assertRaises(WeixinApiError):
             WeixinApi(token="secret-for-test").send_text("user-1", "你好", "")
+
+    def test_send_file_builds_official_file_item(self):
+        api = WeixinApi(token="secret-for-test")
+        captured = {}
+
+        def fake_request(method, endpoint, payload=None, **kwargs):
+            captured.update(payload=payload)
+            return {"ret": 0}
+
+        api._request_json = fake_request
+        uploaded = UploadedMedia("download-param", "ab" * 16, 123, 128)
+        api.send_file("user-1", uploaded, "宝宝语音.mp3", "ctx-1")
+        item = captured["payload"]["msg"]["item_list"][0]
+        self.assertEqual(item["type"], 4)
+        self.assertEqual(item["file_item"]["file_name"], "宝宝语音.mp3")
+        self.assertEqual(item["file_item"]["len"], "123")
+        self.assertEqual(
+            item["file_item"]["media"]["aes_key"],
+            base64.b64encode(("ab" * 16).encode("ascii")).decode("ascii"),
+        )
+
+    def test_send_rejects_business_error(self):
+        api = WeixinApi(token="secret-for-test")
+        api._request_json = lambda *_args, **_kwargs: {
+            "ret": -2,
+            "errmsg": "prepare failed",
+        }
+        with self.assertRaisesRegex(WeixinApiError, "ret=-2"):
+            api.send_text("user-1", "你好", "ctx-1")
+
+    def test_native_voice_payload_is_explicitly_experimental(self):
+        api = WeixinApi(token="secret-for-test")
+        captured = {}
+        api._request_json = lambda _m, _e, payload=None, **_kwargs: (
+            captured.update(payload=payload) or {"ret": 0}
+        )
+        uploaded = UploadedMedia("voice-param", "cd" * 16, 100, 112)
+        api.send_voice_experimental(
+            "user-1", uploaded, "ctx-1", playtime_ms=1200
+        )
+        item = captured["payload"]["msg"]["item_list"][0]
+        self.assertEqual(item["type"], 3)
+        self.assertEqual(item["voice_item"]["encode_type"], 7)
+        self.assertNotIn("encrypt_type", item["voice_item"]["media"])
 
 
 class WeixinBotTests(unittest.TestCase):
@@ -57,6 +110,13 @@ class WeixinBotTests(unittest.TestCase):
             account = WeixinAccount("token", "bot", "owner")
             save_account(account, path)
             self.assertEqual(load_account(path), account)
+
+    def test_voice_intent_understands_natural_language(self):
+        self.assertEqual(voice_intent("以后都用语音回复我"), "on")
+        self.assertEqual(voice_intent("以后用文字回复我"), "off")
+        self.assertEqual(voice_intent("宝宝用语音回答这个问题"), "once")
+        self.assertEqual(voice_intent("测试微信语音气泡"), "bubble_test")
+        self.assertIsNone(voice_intent("为什么语音回复这么难实现"))
 
 
 if __name__ == "__main__":

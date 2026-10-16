@@ -104,6 +104,7 @@ class Dashboard(tk.Tk):
         labels = {
             "running": "● 正在运行",
             "restarting": "◐ 正在自动重启",
+            "external_running": "◐ 已检测到其他微信实例",
             "stopped": "○ 已停止",
             "duplicate": "● 已有实例运行",
             "not_started": "○ 尚未启动",
@@ -157,7 +158,11 @@ class Dashboard(tk.Tk):
             "将用所选备份替换当前记忆和数据库。恢复前会自动再备份当前状态，是否继续？",
         ):
             return
-        was_running = read_status().get("state") in {"running", "restarting"}
+        was_running = read_status().get("state") in {
+            "running",
+            "restarting",
+            "external_running",
+        }
         try:
             if was_running:
                 stop_guardian()

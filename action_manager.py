@@ -20,6 +20,22 @@ ALLOWED_SUFFIXES = {
     ".css",
     ".js",
 }
+BLOCKED_MANAGED_PARTS = {
+    ".git",
+    ".env",
+    "venv",
+    "__pycache__",
+    "appdata",
+    "windows",
+    "program files",
+    "program files (x86)",
+}
+
+
+def _default_managed_roots():
+    home = Path.home()
+    candidates = [Path("D:/Workspace"), home / "Desktop", home / "Documents", home / "Downloads"]
+    return tuple(path.resolve() for path in candidates if path.exists())
 
 
 def _utc_now():
@@ -29,9 +45,17 @@ def _utc_now():
 class ActionManager:
     """保存并执行需要用户明确确认的本地动作。"""
 
-    def __init__(self, database_path=DEFAULT_DATABASE, workspace_directory=WORKSPACE_DIR):
+    def __init__(
+        self,
+        database_path=DEFAULT_DATABASE,
+        workspace_directory=WORKSPACE_DIR,
+        managed_roots=None,
+    ):
         self.database_path = Path(database_path)
         self.workspace_directory = Path(workspace_directory).resolve()
+        self.managed_roots = tuple(
+            Path(path).resolve() for path in (managed_roots or _default_managed_roots())
+        )
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialise()
 
@@ -112,6 +136,59 @@ class ActionManager:
             )
         return {"action_id": action_id, "summary": summary, "status": "pending"}
 
+    def _safe_managed_path(self, value, must_exist=False):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("文件路径不能为空")
+        target = Path(value.strip()).expanduser().resolve()
+        managed_root = next(
+            (
+                root
+                for root in self.managed_roots
+                if target == root or root in target.parents
+            ),
+            None,
+        )
+        if managed_root is None:
+            raise ValueError("文件路径不在授权整理目录中")
+        relative_parts = target.relative_to(managed_root).parts
+        if any(
+            part.startswith(".") or part.casefold() in BLOCKED_MANAGED_PARTS
+            for part in relative_parts
+        ):
+            raise ValueError("这个路径包含受保护目录")
+        if must_exist and not target.is_file():
+            raise ValueError("源文件不存在或不是普通文件")
+        return target
+
+    def prepare_file_move(self, source_path, destination_path):
+        source = self._safe_managed_path(source_path, must_exist=True)
+        destination = self._safe_managed_path(destination_path)
+        if source.drive.casefold() != destination.drive.casefold():
+            raise ValueError("当前版本只允许在同一个磁盘内移动文件")
+        if destination.exists():
+            raise ValueError("目标文件已经存在，拒绝覆盖")
+        if not destination.parent.is_dir():
+            raise ValueError("目标文件夹不存在")
+        stat = source.stat()
+        action_id = uuid.uuid4().hex[:12]
+        payload = {
+            "source": str(source),
+            "destination": str(destination),
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+        }
+        summary = f"移动文件：{source} → {destination}"
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO pending_actions
+                    (id, action_type, summary, payload, created_at)
+                VALUES (?, 'move_file', ?, ?, ?)
+                """,
+                (action_id, summary, json.dumps(payload, ensure_ascii=False), _utc_now()),
+            )
+        return {"action_id": action_id, "summary": summary, "status": "pending"}
+
     def list_pending(self):
         with self._connect() as connection:
             rows = connection.execute(
@@ -138,35 +215,49 @@ class ActionManager:
                 raise ValueError("找不到这个待执行动作")
             if row["status"] != "pending":
                 raise ValueError("这个动作已经处理过了")
-            if row["action_type"] != "create_file":
-                raise ValueError("不支持的动作类型")
-
             payload = json.loads(row["payload"])
-            target = self._safe_workspace_path(payload["path"])
-            if target.exists():
-                raise ValueError("目标文件已经存在，拒绝覆盖")
+            if row["action_type"] == "create_file":
+                target = self._safe_workspace_path(payload["path"])
+                if target.exists():
+                    raise ValueError("目标文件已经存在，拒绝覆盖")
 
-            target.parent.mkdir(parents=True, exist_ok=True)
-            descriptor = None
-            try:
-                descriptor = os.open(
-                    target,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                    0o600,
-                )
-                with os.fdopen(descriptor, "w", encoding="utf-8") as file:
-                    descriptor = None
-                    file.write(payload["content"])
-            except FileExistsError as error:
-                raise ValueError("目标文件已经存在，拒绝覆盖") from error
-            except Exception:
-                if descriptor is not None:
-                    os.close(descriptor)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                descriptor = None
                 try:
-                    os.unlink(target)
-                except FileNotFoundError:
-                    pass
-                raise
+                    descriptor = os.open(
+                        target,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o600,
+                    )
+                    with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+                        descriptor = None
+                        file.write(payload["content"])
+                except FileExistsError as error:
+                    raise ValueError("目标文件已经存在，拒绝覆盖") from error
+                except Exception:
+                    if descriptor is not None:
+                        os.close(descriptor)
+                    try:
+                        os.unlink(target)
+                    except FileNotFoundError:
+                        pass
+                    raise
+            elif row["action_type"] == "move_file":
+                source = self._safe_managed_path(payload["source"], must_exist=True)
+                target = self._safe_managed_path(payload["destination"])
+                current = source.stat()
+                if current.st_size != payload["size"] or current.st_mtime_ns != payload["mtime_ns"]:
+                    raise ValueError("源文件在审批期间发生变化，已停止移动")
+                if target.exists():
+                    raise ValueError("目标文件已经存在，拒绝覆盖")
+                if not target.parent.is_dir():
+                    raise ValueError("目标文件夹不存在")
+                try:
+                    source.rename(target)
+                except FileExistsError as error:
+                    raise ValueError("目标文件已经存在，拒绝覆盖") from error
+            else:
+                raise ValueError("不支持的动作类型")
 
             connection.execute(
                 """

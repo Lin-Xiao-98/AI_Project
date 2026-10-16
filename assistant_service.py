@@ -6,6 +6,7 @@ import base64
 import mimetypes
 import sqlite3
 import threading
+from pathlib import Path
 
 from action_manager import ActionManager
 from backup_manager import create_backup_with_retention
@@ -27,7 +28,9 @@ from main import (
     load_persona,
     should_analyse_memory,
 )
+from media_analysis_manager import create_shot_report
 from memory_manager import get_memory_text
+from natural_command_manager import handle_natural_command
 from proactive_manager import ProactiveManager
 from reminder_manager import ReminderManager
 from task_manager import TaskManager
@@ -59,6 +62,14 @@ class AssistantService:
             raise ValueError("消息内容不能为空。")
         if len(user_input) > 8000:
             raise ValueError("消息过长，请控制在 8000 个字符以内。")
+        try:
+            natural_reply = handle_natural_command(
+                user_input, self.tasks, self.reminders, actions=self.actions
+            )
+        except (OSError, sqlite3.Error, ValueError, RuntimeError) as error:
+            return f"自然语言操作未执行：{error}"
+        if natural_reply is not None:
+            return natural_reply
         try:
             command_reply = self._remote_command(user_input, channel, subject)
         except (OSError, sqlite3.Error, ValueError, RuntimeError) as error:
@@ -133,6 +144,30 @@ class AssistantService:
                     enriched += f"\n\n[附件 {path.name} 的内容]\n{extracted[:12000]}"
                 except (OSError, ValueError):
                     enriched += f"\n\n[附件 {path.name} 无法提取文字]"
+            elif attachment.kind == "video" and any(
+                phrase in text for phrase in ("拉片", "分析视频", "分析素材", "分析这个视频", "拆解视频")
+            ):
+                try:
+                    analysis = create_shot_report(path, max_frames=8)
+                    report_path = Path(analysis["report_path"])
+                    report_text = report_path.read_text(encoding="utf-8")
+                    enriched += (
+                        f"\n\n[已在本机生成视频基础拉片：{report_path}]\n"
+                        f"{report_text[:12000]}"
+                    )
+                    for frame in sorted((report_path.parent / "frames").glob("*.jpg"))[:8]:
+                        encoded = base64.b64encode(frame.read_bytes()).decode("ascii")
+                        images.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{encoded}",
+                                    "detail": "low",
+                                },
+                            }
+                        )
+                except (OSError, ValueError, RuntimeError) as error:
+                    enriched += f"\n\n[视频基础拉片失败：{error}]"
             else:
                 enriched += f"\n\n[已安全保存附件：{path.name}]"
         return [{"type": "text", "text": enriched}, *images]
@@ -150,9 +185,12 @@ class AssistantService:
                 "/knowledge list｜search 关键词\n"
                 "/pending｜/approve 编号｜/reject 编号\n"
                 "/主动消息 状态｜开启｜关闭\n"
+                "/语音试听｜/语音开启｜/语音关闭｜/语音气泡测试\n"
                 "/backup　立即备份；/export　导出个人数据\n"
                 "/diagnostics　生成隐私安全诊断报告\n"
-                "/new　开始新聊天上下文（长期记忆保留）"
+                "/new　开始新聊天上下文（长期记忆保留）\n\n"
+                "也可以直接说：帮我添加一个待办、提醒我明天晚上8点、"
+                "给我发段语音试试。"
             )
         if text == "/状态":
             usage = USAGE_MANAGER.summary()
@@ -259,11 +297,11 @@ class AssistantService:
                 else "目前没有待审批动作。"
             )
         if text.startswith("/approve "):
-            action_id = int(text.removeprefix("/approve ").strip())
+            action_id = text.removeprefix("/approve ").strip()
             path = self.actions.approve(action_id)
             return f"已批准并创建：{path.name}"
         if text.startswith("/reject "):
-            action_id = int(text.removeprefix("/reject ").strip())
+            action_id = text.removeprefix("/reject ").strip()
             return "已拒绝。" if self.actions.reject(action_id) else "未找到待审批动作。"
         if text == "/backup":
             path = create_backup_with_retention()

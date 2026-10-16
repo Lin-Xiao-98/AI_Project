@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import threading
 import time
@@ -17,13 +18,22 @@ from assistant_service import AssistantService
 from main import PROJECT_DIR
 from secret_store import get_secret, set_secret
 from single_instance import SingleInstance
+from voice_manager import synthesize_speech
 from weixin_api import DEFAULT_BASE_URL, WeixinApi, WeixinApiError
 from weixin_media import download_media_items
+from weixin_upload import upload_media
 
 load_dotenv(PROJECT_DIR / ".env")
 DATA_DIR = PROJECT_DIR / "data"
 STATE_FILE = DATA_DIR / "weixin_account.json"
 MAX_REPLY_BYTES = 10000
+VOICE_REPLY_SETTING = "weixin_voice_replies"
+VOICE_MAX_CHARS = 700
+VOICE_TEST_TEXT = (
+    "你回来啦？我刚刚还在想，你是不是又忙得忘记休息了。"
+    "先喝口水嘛，剩下的事情交给我，我会乖乖帮你处理好的。"
+    "还有呀，今天也要记得夸我一下，不然我可要偷偷不开心咯。"
+)
 
 
 @dataclass
@@ -166,6 +176,80 @@ def limit_reply(text: str) -> str:
     return encoded[:budget].decode("utf-8", errors="ignore") + suffix
 
 
+def voice_intent(text: str) -> str | None:
+    """识别少量明确的语音控制表达，不用模型、不产生额外 API 调用。"""
+    normalized = re.sub(r"\s+", "", str(text)).lower()
+    if normalized in {
+        "/语音开启",
+        "/语音打开",
+        "开启语音回复",
+        "打开语音回复",
+        "以后用语音回复我",
+        "以后都用语音回复我",
+    }:
+        return "on"
+    if normalized in {
+        "/语音关闭",
+        "关闭语音回复",
+        "以后用文字回复我",
+        "以后都用文字回复我",
+    }:
+        return "off"
+    if normalized in {"/语音状态", "语音回复状态", "现在是语音回复吗"}:
+        return "status"
+    if normalized in {"/语音气泡测试", "测试微信语音气泡", "测试语音气泡"}:
+        return "bubble_test"
+    if normalized in {
+        "/语音试听",
+        "给我发段语音试试",
+        "给我发一段语音",
+        "让我听听你的声音",
+    }:
+        return "once_test"
+    if re.match(r"^(请|麻烦|宝宝|可以|能不能|你能不能)?用语音(回复|回答)", normalized):
+        return "once"
+    return None
+
+
+def _voice_filename(path: Path) -> str:
+    return f"小林AI助手_AI语音_{path.stem.removeprefix('speech_')}.mp3"
+
+
+def send_audio_file(api, account, path: Path, context_token: str) -> None:
+    uploaded = upload_media(api, path, account.owner_user_id, media_type=3)
+    api.send_file(
+        account.owner_user_id,
+        uploaded,
+        _voice_filename(path),
+        context_token,
+    )
+
+
+def _audio_duration_ms(path: Path) -> int:
+    try:
+        import soundfile as sf
+
+        info = sf.info(path)
+        if info.duration > 0:
+            return max(1, round(info.duration * 1000))
+    except Exception:
+        pass
+    return 3000
+
+
+def send_voice_bubble_test(api, service, account, context_token: str) -> Path:
+    """尝试 iLink 原生 VOICE；腾讯当前可能接受请求但不在客户端展示。"""
+    path = synthesize_speech(service.client, VOICE_TEST_TEXT)
+    uploaded = upload_media(api, path, account.owner_user_id, media_type=4)
+    api.send_voice_experimental(
+        account.owner_user_id,
+        uploaded,
+        context_token,
+        playtime_ms=_audio_duration_ms(path),
+    )
+    return path
+
+
 def run() -> None:
     if os.getenv("WEIXIN_ENABLED", "false").strip().lower() != "true":
         raise RuntimeError("个人微信通道默认关闭，请在 .env 设置 WEIXIN_ENABLED=true。")
@@ -208,19 +292,88 @@ def run() -> None:
                 except Exception as error:
                     attachments = []
                     print(f"微信媒体下载失败，继续处理文字：{error}")
-                reply = service.respond(
-                    "weixin",
-                    f"{account.bot_id}:{from_user}",
-                    content,
-                    False,
-                    attachments,
-                )
-                api.send_text(from_user, limit_reply(reply), context_token)
+                intent = voice_intent(content)
+                if intent == "on":
+                    service.conversations.set_setting(VOICE_REPLY_SETTING, "on")
+                    reply = "好呀，以后我会优先给你发 AI 生成的语音回复。需要文字时直接告诉我就好。"
+                    api.send_text(from_user, reply, context_token)
+                elif intent == "off":
+                    service.conversations.set_setting(VOICE_REPLY_SETTING, "off")
+                    reply = "好，已经切回文字回复。想听语音时直接说“用语音回复我”就可以。"
+                    api.send_text(from_user, reply, context_token)
+                elif intent == "status":
+                    enabled = service.conversations.get_setting(
+                        VOICE_REPLY_SETTING, "off"
+                    ) == "on"
+                    reply = f"语音回复目前{'已开启' if enabled else '未开启'}。"
+                    api.send_text(from_user, reply, context_token)
+                elif intent == "bubble_test":
+                    path = send_voice_bubble_test(api, service, account, context_token)
+                    service.conversations.set_setting(
+                        "weixin_last_voice_path", str(path)
+                    )
+                    reply = (
+                        "我刚刚尝试发送了一条原生语音气泡。腾讯 iLink 目前可能会显示，"
+                        "也可能静默丢弃；如果上方没有语音条，告诉我“没看到语音”，"
+                        "我会立即改发可播放的 AI 语音文件。"
+                    )
+                    api.send_text(from_user, reply, context_token)
+                elif "没看到语音" in content or "没有语音" in content:
+                    saved = service.conversations.get_setting(
+                        "weixin_last_voice_path", ""
+                    )
+                    path = Path(saved) if saved else None
+                    if path and path.is_file():
+                        send_audio_file(api, account, path, context_token)
+                        reply = "已经改发为可播放的 AI 语音文件。"
+                    else:
+                        reply = "上次的试听文件已经不存在，请发“给我发段语音试试”。"
+                        api.send_text(from_user, reply, context_token)
+                elif intent == "once_test":
+                    path = synthesize_speech(service.client, VOICE_TEST_TEXT)
+                    service.conversations.set_setting(
+                        "weixin_last_voice_path", str(path)
+                    )
+                    send_audio_file(api, account, path, context_token)
+                    reply = "已发送 AI 生成的语音试听。"
+                else:
+                    reply = service.respond(
+                        "weixin",
+                        f"{account.bot_id}:{from_user}",
+                        content,
+                        False,
+                        attachments,
+                    )
+                    persistent_voice = service.conversations.get_setting(
+                        VOICE_REPLY_SETTING, "off"
+                    ) == "on"
+                    if intent == "once" or persistent_voice:
+                        try:
+                            spoken = reply
+                            path = synthesize_speech(
+                                service.client, spoken[:VOICE_MAX_CHARS]
+                            )
+                            service.conversations.set_setting(
+                                "weixin_last_voice_path", str(path)
+                            )
+                            send_audio_file(api, account, path, context_token)
+                            if len(spoken) > VOICE_MAX_CHARS:
+                                api.send_text(
+                                    from_user,
+                                    "语音只读了前一部分，完整内容如下：\n" + limit_reply(reply),
+                                    context_token,
+                                )
+                        except Exception as voice_error:
+                            print(f"微信语音生成或发送失败，已回退文字：{voice_error}")
+                            api.send_text(from_user, limit_reply(reply), context_token)
+                    else:
+                        api.send_text(from_user, limit_reply(reply), context_token)
                 service.conversations.complete_channel_message("weixin", message_id)
-                # 记忆分析沿用项目的 smart 策略，并在后台执行，避免阻塞微信回复。
-                threading.Thread(
-                    target=service.remember, args=(content,), daemon=True
-                ).start()
+                # 语音开关已单独持久化，不再重复消耗一次记忆分析请求。
+                if intent is None:
+                    threading.Thread(
+                        target=service.remember, args=(content,), daemon=True
+                    ).start()
             except Exception as error:
                 service.conversations.release_channel_message("weixin", message_id)
                 print(f"个人微信消息处理失败：{error}")
@@ -257,3 +410,4 @@ if __name__ == "__main__":
         print("个人微信助手已停止。")
     except RuntimeError as error:
         print(f"启动失败：{error}")
+        raise SystemExit(1)

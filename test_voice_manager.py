@@ -70,9 +70,49 @@ class VoiceManagerTests(unittest.TestCase):
             )
         )
         with patch.object(voice_manager, "AUDIO_DIR", self.temp_path):
-            path = voice_manager.synthesize_speech(client, "你好")
+            path = voice_manager.synthesize_speech(client, "你好", provider="openai")
         self.assertEqual(path.read_bytes(), b"fake mp3")
-        self.assertEqual(streaming.request["voice"], "marin")
+        self.assertEqual(streaming.request["voice"], "shimmer")
+        self.assertEqual(streaming.request["response_format"], "mp3")
+        self.assertIn("十八至二十岁", streaming.request["instructions"])
+
+    def test_synthesize_speech_accepts_voice_style_override(self):
+        streaming = FakeStreamingResponse()
+        client = SimpleNamespace(
+            audio=SimpleNamespace(
+                speech=SimpleNamespace(with_streaming_response=streaming)
+            )
+        )
+        with patch.object(voice_manager, "AUDIO_DIR", self.temp_path):
+            voice_manager.synthesize_speech(
+                client,
+                "试听",
+                voice="coral",
+                instructions="轻快地说中文。",
+                provider="openai",
+            )
+        self.assertEqual(streaming.request["voice"], "coral")
+        self.assertEqual(streaming.request["instructions"], "轻快地说中文。")
+
+    def test_default_provider_uses_local_qwen_without_openai(self):
+        def fake_run(command, **_kwargs):
+            output = Path(command[command.index("--output") + 1])
+            output.write_bytes(b"local mp3")
+            return SimpleNamespace(returncode=0, stdout=str(output), stderr="")
+
+        fake_python = self.temp_path / "python.exe"
+        fake_runner = self.temp_path / "runner.py"
+        fake_python.write_bytes(b"exe")
+        fake_runner.write_text("# runner", encoding="utf-8")
+        with (
+            patch.object(voice_manager, "AUDIO_DIR", self.temp_path),
+            patch.object(voice_manager, "QWEN_TTS_PYTHON", fake_python),
+            patch.object(voice_manager, "QWEN_TTS_RUNNER", fake_runner),
+            patch.object(voice_manager.subprocess, "run", side_effect=fake_run) as run,
+        ):
+            path = voice_manager.synthesize_speech(None, "你好")
+        self.assertEqual(path.read_bytes(), b"local mp3")
+        self.assertIn("--instruction", run.call_args.args[0])
 
     def test_record_audio_rejects_invalid_duration(self):
         for duration in (0, 61, "abc"):

@@ -57,13 +57,62 @@ class ToolManagerTests(unittest.TestCase):
             {
                 "search_web",
                 "get_current_time",
+                "get_system_status",
+                "list_running_apps",
+                "find_files",
+                "capture_screen",
+                "analyze_current_screen",
+                "open_application",
                 "list_project_files",
                 "read_project_text_file",
                 "list_tasks",
                 "prepare_workspace_file",
+                "prepare_file_move",
                 "search_knowledge",
             },
         )
+
+    def test_computer_tools_dispatch_through_audit_layer(self):
+        with (
+            patch.object(tool_manager, "get_system_status", return_value={"cpu_percent": 9}),
+            patch.object(tool_manager, "list_running_apps", return_value={"apps": []}),
+            patch.object(tool_manager, "capture_screen", return_value={"path": "D:/screen.png"}),
+            patch.object(
+                tool_manager,
+                "_analyze_current_screen",
+                return_value={"description": "当前是桌面"},
+            ),
+            patch.object(tool_manager, "open_application", return_value={"opened": "notepad"}),
+        ):
+            status = json.loads(
+                tool_manager.execute_tool("get_system_status", {}, self.task_manager)
+            )
+            apps = json.loads(
+                tool_manager.execute_tool(
+                    "list_running_apps", {"limit": 5}, self.task_manager
+                )
+            )
+            screen = json.loads(
+                tool_manager.execute_tool("capture_screen", {}, self.task_manager)
+            )
+            analyzed = json.loads(
+                tool_manager.execute_tool(
+                    "analyze_current_screen",
+                    {"focus": "看看屏幕"},
+                    self.task_manager,
+                    client=object(),
+                )
+            )
+            opened = json.loads(
+                tool_manager.execute_tool(
+                    "open_application", {"application": "notepad"}, self.task_manager
+                )
+            )
+        self.assertEqual(status["cpu_percent"], 9)
+        self.assertEqual(apps["apps"], [])
+        self.assertEqual(screen["path"], "D:/screen.png")
+        self.assertEqual(analyzed["description"], "当前是桌面")
+        self.assertEqual(opened["opened"], "notepad")
 
     def test_search_knowledge_tool(self):
         source = Path(self.temp_directory.name) / "knowledge.txt"
@@ -94,6 +143,26 @@ class ToolManagerTests(unittest.TestCase):
         self.assertFalse(
             (self.action_manager.workspace_directory / "notes" / "test.md").exists()
         )
+
+    def test_prepare_move_tool_requires_later_approval(self):
+        root = Path(self.temp_directory.name)
+        manager = ActionManager(
+            root / "move.db", root / "workspace2", managed_roots=[root]
+        )
+        source = root / "before.txt"
+        destination = root / "after.txt"
+        source.write_text("内容", encoding="utf-8")
+        result = json.loads(
+            tool_manager.execute_tool(
+                "prepare_file_move",
+                {"source_path": str(source), "destination_path": str(destination)},
+                self.task_manager,
+                manager,
+            )
+        )
+        self.assertEqual(result["status"], "pending")
+        self.assertTrue(source.exists())
+        self.assertFalse(destination.exists())
 
     def test_add_reminder_tool(self):
         from datetime import datetime, timedelta

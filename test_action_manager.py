@@ -8,9 +8,11 @@ from action_manager import ActionManager
 class ActionManagerTests(unittest.TestCase):
     def setUp(self):
         self.temp_directory = tempfile.TemporaryDirectory()
-        root = Path(self.temp_directory.name)
-        self.workspace = root / "workspace"
-        self.manager = ActionManager(root / "assistant.db", self.workspace)
+        self.root = Path(self.temp_directory.name)
+        self.workspace = self.root / "workspace"
+        self.manager = ActionManager(
+            self.root / "assistant.db", self.workspace, managed_roots=[self.root]
+        )
 
     def tearDown(self):
         self.temp_directory.cleanup()
@@ -41,6 +43,38 @@ class ActionManagerTests(unittest.TestCase):
         (self.workspace / "exists.txt").write_text("原内容", encoding="utf-8")
         with self.assertRaises(ValueError):
             self.manager.prepare_file_creation("exists.txt", "新内容")
+
+    def test_move_file_requires_approval_and_never_overwrites(self):
+        source = self.root / "source.txt"
+        destination = self.root / "renamed.txt"
+        source.write_text("保留内容", encoding="utf-8")
+        action = self.manager.prepare_file_move(str(source), str(destination))
+        self.assertTrue(source.exists())
+        self.assertFalse(destination.exists())
+
+        approved = self.manager.approve(action["action_id"])
+
+        self.assertEqual(approved, destination.resolve())
+        self.assertFalse(source.exists())
+        self.assertEqual(destination.read_text(encoding="utf-8"), "保留内容")
+
+    def test_move_stops_if_source_changes_after_preview(self):
+        source = self.root / "source.txt"
+        destination = self.root / "destination.txt"
+        source.write_text("第一版", encoding="utf-8")
+        action = self.manager.prepare_file_move(str(source), str(destination))
+        source.write_text("审批前被修改了", encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "发生变化"):
+            self.manager.approve(action["action_id"])
+        self.assertFalse(destination.exists())
+
+    def test_move_rejects_outside_managed_roots(self):
+        source = self.root / "source.txt"
+        source.write_text("内容", encoding="utf-8")
+        outside = self.root.parent / "outside.txt"
+        with self.assertRaisesRegex(ValueError, "授权"):
+            self.manager.prepare_file_move(str(source), str(outside))
 
 
 if __name__ == "__main__":

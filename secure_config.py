@@ -15,6 +15,48 @@ from secret_store import get_secret, set_secret
 ENV_FILE = PROJECT_DIR / ".env"
 
 
+def set_env_value(name: str, value: str, env_file: Path = ENV_FILE) -> None:
+    """原子更新一项普通配置，不读取或打印其他配置值。"""
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]*", str(name)):
+        raise ValueError("配置名格式无效")
+    value = str(value)
+    if "\n" in value or "\r" in value:
+        raise ValueError("配置值不能包含换行")
+    env_file = Path(env_file)
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    original = (
+        env_file.read_text(encoding="utf-8").splitlines(keepends=True)
+        if env_file.exists()
+        else []
+    )
+    pattern = re.compile(rf"^\s*(?:export\s+)?{re.escape(name)}\s*=")
+    replacement = f"{name}={value}\n"
+    updated = []
+    replaced = False
+    for line in original:
+        if not pattern.match(line):
+            updated.append(line)
+        elif not replaced:
+            updated.append(replacement)
+            replaced = True
+    if not replaced:
+        if updated and not updated[-1].endswith(("\n", "\r")):
+            updated[-1] += "\n"
+        updated.append(replacement)
+    descriptor, temp_name = tempfile.mkstemp(
+        prefix="env_", suffix=".tmp", dir=env_file.parent
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+            stream.writelines(updated)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_name, env_file)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
 def migrate_env_secret(
     env_name: str = "OPENAI_API_KEY",
     secret_name: str = "openai_api_key",
