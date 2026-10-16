@@ -14,8 +14,15 @@ import soundfile as sf
 import torch
 from qwen_tts import Qwen3TTSModel
 
-DEFAULT_MODEL = Path("D:/AI_Models/Qwen3-TTS/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
-FFMPEG = Path("D:/AI_Tools/FFmpeg/bin/ffmpeg.exe")
+PROJECT_DIR = Path(__file__).resolve().parent
+LOCAL_ASSETS_DIR = PROJECT_DIR / "local_assets"
+DEFAULT_MODEL = (
+    LOCAL_ASSETS_DIR
+    / "models"
+    / "Qwen3-TTS"
+    / "Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+)
+FFMPEG = LOCAL_ASSETS_DIR / "tools" / "FFmpeg" / "bin" / "ffmpeg.exe"
 
 AUDITION_TEXT = "你终于回来啦？我都等你好久了。再不理我，我可真的要生气啦……不过，你要是好好哄哄我，我也不是不能原谅你呀。"
 AUDITIONS = (

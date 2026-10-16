@@ -12,6 +12,15 @@ from single_instance import SingleInstance
 
 
 class GuardianTests(unittest.TestCase):
+    def test_duplicate_start_does_not_overwrite_running_status(self):
+        with (
+            patch("assistant_guardian._logger") as logger,
+            patch("assistant_guardian._write_status") as write_status,
+        ):
+            assistant_guardian._report_duplicate(RuntimeError("already running"))
+        logger.return_value.info.assert_called_once()
+        write_status.assert_not_called()
+
     def test_stale_status_is_reported_as_stopped(self):
         with tempfile.TemporaryDirectory() as temporary:
             status_file = Path(temporary) / "status.json"

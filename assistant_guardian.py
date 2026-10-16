@@ -94,6 +94,11 @@ def _weixin_instance_running() -> bool:
         return True
 
 
+def _report_duplicate(error: Exception) -> None:
+    """记录重复启动但保留正在运行实例的状态文件。"""
+    _logger().info("后台守护程序重复启动已忽略：%s", error)
+
+
 def run():
     logger = _logger()
     stopping = False
@@ -188,4 +193,5 @@ if __name__ == "__main__":
     try:
         run()
     except RuntimeError as error:
-        _write_status("duplicate", detail=str(error))
+        # 另一个健康实例已持有锁时，不覆盖它写下的 running 状态。
+        _report_duplicate(error)

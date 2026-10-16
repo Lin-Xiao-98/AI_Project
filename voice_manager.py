@@ -26,10 +26,13 @@ DEFAULT_TTS_INSTRUCTIONS = (
     "偶尔轻轻拖长。魅力来自亲昵和调皮，不要低俗。绝不能像御姐、母亲、播音员或沙哑低沉的"
     "成年人，也不要儿童腔或夸张动漫腔。使用自然中文普通话。"
 )
-QWEN_TTS_PYTHON = Path("D:/AI_Runtime/Qwen3-TTS/venv/Scripts/python.exe")
+LOCAL_ASSETS_DIR = PROJECT_DIR / "local_assets"
+QWEN_TTS_PYTHON = (
+    LOCAL_ASSETS_DIR / "runtime" / "Qwen3-TTS" / "venv" / "Scripts" / "python.exe"
+)
 QWEN_TTS_RUNNER = PROJECT_DIR / "qwen_tts_runner.py"
 QWEN_TTS_TIMEOUT_SECONDS = 600
-FFMPEG_PATH = Path("D:/AI_Tools/FFmpeg/bin/ffmpeg.exe")
+FFMPEG_PATH = LOCAL_ASSETS_DIR / "tools" / "FFmpeg" / "bin" / "ffmpeg.exe"
 VOICE_CONVERT_TIMEOUT_SECONDS = 120
 
 

@@ -236,12 +236,12 @@ WEIXIN_ENABLED=true
 
 大型运行文件都放在 D 盘项目之外：
 
-- `D:\AI_Runtime\Qwen3-TTS\`：本地语音独立 Python 运行环境
-- `D:\AI_Models\Qwen3-TTS\`：本地语音模型权重
-- `D:\AI_Tools\FFmpeg\`：视频分析工具
-- `D:\AI_Cache\`：安装包与模型下载缓存；确认长期稳定后可单独清理缓存，不影响项目源码
+- `local_assets/runtime/Qwen3-TTS/`：本地语音独立 Python 运行环境
+- `local_assets/models/Qwen3-TTS/`：本地语音模型权重
+- `local_assets/tools/FFmpeg/`：视频分析工具
+- `local_assets/cache/`：安装包与模型下载缓存；确认长期稳定后可单独清理，不影响项目源码
 
-以上目录均不会提交到 Git。旧版仓库中的 `memory.json` 已迁移到 `data/memory.json`，内容保留但从版本控制删除。
+所有项目资源现在都聚合在 `D:\Workspace\AI_Project`。`local_assets/` 不会提交到 Git；旧版仓库中的 `memory.json` 已迁移到 `data/memory.json`，内容保留但从版本控制删除。
 
 “本地保存”不等于“从不发送”：聊天、联网搜索、资料理解和语音转写仍可能把相关内容发送到 OpenAI API。默认 Qwen 语音合成、电脑状态、文件名搜索、截图保存和 FFmpeg 抽帧在本机完成；截图只有在后续明确要求分析时才会发送给视觉模型。不要导入或上传密码、密钥、验证码、身份证件等敏感内容。
 
@@ -283,4 +283,5 @@ assistant_dashboard.py   图形化本地控制台
 secret_store.py          Windows DPAPI 密钥库
 diagnostics_manager.py   隐私安全的运行诊断
 export_manager.py        不含密钥的个人数据导出
+tests/                   全部自动化测试与手动冒烟测试
 ```

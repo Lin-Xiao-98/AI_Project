@@ -12,7 +12,7 @@ from pathlib import Path
 
 from conversation_manager import PROJECT_DIR
 
-FFMPEG_DIR = Path("D:/AI_Tools/FFmpeg/bin")
+FFMPEG_DIR = PROJECT_DIR / "local_assets" / "tools" / "FFmpeg" / "bin"
 FFMPEG = FFMPEG_DIR / "ffmpeg.exe"
 FFPROBE = FFMPEG_DIR / "ffprobe.exe"
 REPORT_ROOT = PROJECT_DIR / "workspace" / "media_reports"
