@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 
 from dotenv import load_dotenv
@@ -10,6 +11,69 @@ from dotenv import load_dotenv
 from conversation_manager import DEFAULT_DATABASE, PROJECT_DIR
 from memory_manager import MEMORY_FILE, get_memory_count
 from secret_store import get_secret
+
+LOCAL_ASSETS = PROJECT_DIR / "local_assets"
+QWEN_PYTHON = (
+    LOCAL_ASSETS / "runtime" / "Qwen3-TTS" / "venv" / "Scripts" / "python.exe"
+)
+QWEN_MODEL = (
+    LOCAL_ASSETS
+    / "models"
+    / "Qwen3-TTS"
+    / "Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+)
+QWEN_WEIGHTS = QWEN_MODEL / "model.safetensors"
+MIN_QWEN_WEIGHTS_BYTES = 3_000_000_000
+FFMPEG = LOCAL_ASSETS / "tools" / "FFmpeg" / "bin" / "ffmpeg.exe"
+FFPROBE = LOCAL_ASSETS / "tools" / "FFmpeg" / "bin" / "ffprobe.exe"
+
+
+def check_local_qwen():
+    required = (QWEN_PYTHON, QWEN_MODEL / "config.json", QWEN_WEIGHTS)
+    missing = [str(path.relative_to(PROJECT_DIR)) for path in required if not path.exists()]
+    if missing:
+        return False, "缺少 " + "、".join(missing)
+    if QWEN_WEIGHTS.stat().st_size < MIN_QWEN_WEIGHTS_BYTES:
+        return False, "模型权重不完整，请按 docs/运行环境与恢复说明.md 重新下载"
+    try:
+        result = subprocess.run(
+            [
+                str(QWEN_PYTHON),
+                "-c",
+                "import torch,qwen_tts;print('cuda' if torch.cuda.is_available() else 'no-cuda')",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=45,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return False, f"本地语音环境无法启动：{error}"
+    if result.returncode != 0:
+        return False, "本地语音依赖损坏，请按恢复说明重建 runtime"
+    if result.stdout.strip().splitlines()[-1:] != ["cuda"]:
+        return False, "未检测到可用 NVIDIA CUDA，本地 Qwen 语音无法运行"
+    return True, "运行环境、模型与 CUDA 正常"
+
+
+def check_ffmpeg():
+    missing = [path.name for path in (FFMPEG, FFPROBE) if not path.is_file()]
+    if missing:
+        return False, "缺少 " + "、".join(missing)
+    try:
+        result = subprocess.run(
+            [str(FFMPEG), "-version"],
+            capture_output=True,
+            timeout=10,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return False, f"FFmpeg 无法启动：{error}"
+    return result.returncode == 0, "工具正常" if result.returncode == 0 else "工具损坏"
 
 
 def check(label, passed, detail=""):
@@ -68,6 +132,26 @@ def main():
     results.append(
         check("核心文件", not missing, "完整" if not missing else ", ".join(missing))
     )
+
+    ffmpeg_ok, ffmpeg_detail = check_ffmpeg()
+    results.append(check("本地 FFmpeg", ffmpeg_ok, ffmpeg_detail))
+
+    tts_provider = os.getenv("TTS_PROVIDER", "qwen").strip().casefold()
+    if tts_provider == "qwen":
+        qwen_ok, qwen_detail = check_local_qwen()
+        results.append(check("本地 Qwen 语音", qwen_ok, qwen_detail))
+    else:
+        results.append(check("本地 Qwen 语音", True, f"当前使用 {tts_provider}，无需本地模型"))
+
+    weixin_enabled = os.getenv("WEIXIN_ENABLED", "false").lower() == "true"
+    account_file = PROJECT_DIR / "data" / "weixin_account.json"
+    token = get_secret("weixin_bot_token") or ""
+    if account_file.is_file() and token:
+        results.append(check("个人微信登录", True, "本机登录状态完整"))
+    elif weixin_enabled:
+        results.append(check("个人微信登录", False, "需重新扫码绑定"))
+    else:
+        results.append(check("个人微信登录", True, "尚未绑定，启用时需要扫码"))
 
     wecom_enabled = os.getenv("WECOM_ENABLED", "false").lower() == "true"
     if wecom_enabled:
