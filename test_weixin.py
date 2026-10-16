@@ -10,6 +10,7 @@ from weixin_api import WeixinApi, WeixinApiError, _safe_base_url
 from weixin_bot import (
     SerialMessageWorker,
     WeixinAccount,
+    attach_recent_video,
     extract_text,
     load_account,
     save_account,
@@ -101,6 +102,30 @@ class WeixinApiTests(unittest.TestCase):
 
 
 class WeixinBotTests(unittest.TestCase):
+    def test_video_can_be_sent_before_followup_analysis_request(self):
+        class Settings:
+            def __init__(self):
+                self.values = {}
+
+            def set_setting(self, key, value):
+                self.values[key] = value
+
+            def get_setting(self, key, default=""):
+                return self.values.get(key, default)
+
+        with tempfile.TemporaryDirectory() as folder:
+            inbox = Path(folder)
+            video = inbox / "clip.mp4"
+            video.write_bytes(b"video")
+            service = SimpleNamespace(conversations=Settings())
+            with patch("weixin_bot.INBOX_DIR", inbox):
+                first = attach_recent_video(
+                    service, "[视频]", [MediaAttachment("video", video)]
+                )
+                followup = attach_recent_video(service, "帮我拉片", [])
+            self.assertEqual(first[0].path, video)
+            self.assertEqual(followup, [MediaAttachment("video", video.resolve())])
+
     def test_missing_weixin_voice_text_is_transcribed(self):
         with tempfile.TemporaryDirectory() as folder:
             source = Path(folder) / "voice.dat"

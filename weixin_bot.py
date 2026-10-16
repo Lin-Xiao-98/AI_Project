@@ -25,7 +25,7 @@ from voice_manager import (
     transcribe_audio,
 )
 from weixin_api import DEFAULT_BASE_URL, WeixinApi, WeixinApiError
-from weixin_media import download_media_items
+from weixin_media import INBOX_DIR, MediaAttachment, download_media_items
 from weixin_upload import upload_media
 
 load_dotenv(PROJECT_DIR / ".env")
@@ -35,6 +35,9 @@ MAX_REPLY_BYTES = 10000
 VOICE_REPLY_SETTING = "weixin_voice_replies"
 VOICE_MAX_CHARS = 700
 MAX_PENDING_MESSAGES = 8
+RECENT_VIDEO_SETTING = "weixin_last_video_path"
+RECENT_VIDEO_MAX_AGE_SECONDS = 24 * 60 * 60
+VIDEO_ANALYSIS_PHRASES = ("拉片", "分析视频", "分析素材", "拆解视频")
 VOICE_TEST_TEXT = (
     "你回来啦？我刚刚还在想，你是不是又忙得忘记休息了。"
     "先喝口水嘛，剩下的事情交给我，我会乖乖帮你处理好的。"
@@ -277,6 +280,36 @@ def transcribe_voice_placeholders(service, content: str, attachments) -> str:
     return content
 
 
+def attach_recent_video(service, content: str, attachments):
+    """支持先发视频、再单独发送“帮我拉片”的微信使用方式。"""
+    attachments = list(attachments)
+    current_video = next(
+        (item.path for item in attachments if item.kind == "video"), None
+    )
+    if current_video is not None:
+        service.conversations.set_setting(RECENT_VIDEO_SETTING, str(current_video))
+    if current_video is not None or not any(
+        phrase in content for phrase in VIDEO_ANALYSIS_PHRASES
+    ):
+        return attachments
+    saved = service.conversations.get_setting(RECENT_VIDEO_SETTING, "")
+    if not saved:
+        return attachments
+    candidate = Path(saved).resolve()
+    inbox = INBOX_DIR.resolve()
+    try:
+        candidate.relative_to(inbox)
+    except ValueError:
+        return attachments
+    if (
+        not candidate.is_file()
+        or time.time() - candidate.stat().st_mtime > RECENT_VIDEO_MAX_AGE_SECONDS
+    ):
+        return attachments
+    attachments.append(MediaAttachment("video", candidate))
+    return attachments
+
+
 class SerialMessageWorker:
     """按收到顺序处理耗时消息，同时让微信长轮询保持响应。"""
 
@@ -320,6 +353,7 @@ def process_owner_message(api, service, account, message) -> None:
         except Exception as error:
             attachments = []
             print(f"微信媒体下载失败，继续处理文字：{error}")
+        attachments = attach_recent_video(service, content, attachments)
         try:
             content = transcribe_voice_placeholders(service, content, attachments)
         except Exception as error:
